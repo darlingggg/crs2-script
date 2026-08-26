@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import packageMetadata from '../package.json'
 import {
   AlertTriangle,
   ArrowRight,
@@ -29,6 +30,8 @@ import {
   UserRoundCheck,
   X,
 } from 'lucide-vue-next'
+
+const appVersion = packageMetadata.version
 
 type Repository = {
   path: string
@@ -681,7 +684,7 @@ onBeforeUnmount(() => {
       </a>
       <div class="topbar-meta">
         <span class="local-pill"><span class="live-dot"></span>本地运行</span>
-        <span class="version">v0.1</span>
+        <span class="version">v{{ appVersion }}</span>
       </div>
     </header>
 
