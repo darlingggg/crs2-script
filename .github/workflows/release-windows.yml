@@ -39,7 +39,18 @@ jobs:
 
       - name: Install dependencies
         # Electron is downloaded by electron-builder during the publish step.
-        run: pnpm install --frozen-lockfile --ignore-scripts --reporter=append-only
+        shell: pwsh
+        run: |
+          $installOutput = pnpm install --frozen-lockfile --ignore-scripts --reporter=append-only 2>&1
+          $installExitCode = $LASTEXITCODE
+          $installOutput | ForEach-Object { Write-Host $_ }
+
+          if ($installExitCode -ne 0) {
+            $message = ($installOutput | Out-String).Trim()
+            $message = $message.Replace('%', '%25').Replace("`r", '%0D').Replace("`n", '%0A')
+            Write-Output "::error title=pnpm install failed::$message"
+            exit $installExitCode
+          }
 
       - name: Build and publish release
         run: pnpm release:win
