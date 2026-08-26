@@ -9,7 +9,20 @@ interface LaunchlineDesktopBridge {
   restoreMainWindow(): void
   hideFloatingBall(): void
   quitApplication(): void
+  getUpdateState(): Promise<DesktopUpdateState>
+  checkForUpdates(): void
+  downloadUpdate(): void
+  installUpdate(): void
+  onUpdateState(callback: (state: DesktopUpdateState) => void): () => void
   onDeploymentCount(callback: (count: number) => void): () => void
+}
+
+type DesktopUpdateState = {
+  phase: 'idle' | 'checking' | 'up-to-date' | 'available' | 'downloading' | 'downloaded' | 'error'
+  currentVersion: string
+  availableVersion?: string
+  percent?: number
+  message?: string
 }
 
 interface Window {

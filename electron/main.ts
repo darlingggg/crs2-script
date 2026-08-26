@@ -12,7 +12,6 @@ import {
   Notification,
   screen,
   Tray,
-  type MessageBoxOptions,
 } from 'electron'
 import electronUpdater from 'electron-updater'
 import { getDeploymentsSnapshot, getRunningDeploymentCount } from '../server/deployment.ts'
@@ -33,8 +32,17 @@ let forceQuit = false
 let pendingOpenPath = ''
 let statusTimer: NodeJS.Timeout | undefined
 let updateTimer: NodeJS.Timeout | undefined
-let updatePromptOpen = false
 let updateDownloading = false
+type DesktopUpdatePhase = 'idle' | 'checking' | 'up-to-date' | 'available' | 'downloading' | 'downloaded' | 'error'
+type DesktopUpdateState = {
+  phase: DesktopUpdatePhase
+  currentVersion: string
+  availableVersion?: string
+  percent?: number
+  message?: string
+}
+let updateState: DesktopUpdateState = { phase: 'idle', currentVersion: electronApp.getVersion() }
+let checkForUpdates = async () => {}
 const previousStatuses = new Map<string, string>()
 const previewDeploymentCount = process.env.LAUNCHLINE_FLOATING_PREVIEW === '1' ? 1 : 0
 
@@ -243,10 +251,29 @@ function watchDeployments() {
   }, 1000)
 }
 
-function showDesktopMessage(options: MessageBoxOptions) {
-  return mainWindow && !mainWindow.isDestroyed()
-    ? dialog.showMessageBox(mainWindow, options)
-    : dialog.showMessageBox(options)
+function publishUpdateState(nextState: Partial<DesktopUpdateState>) {
+  updateState = { ...updateState, ...nextState, currentVersion: electronApp.getVersion() }
+  mainWindow?.webContents.send('desktop:update-state', updateState)
+}
+
+async function downloadAvailableUpdate() {
+  if (updateDownloading || updateState.phase === 'downloaded') return
+  updateDownloading = true
+  publishUpdateState({ phase: 'downloading', percent: 0, message: undefined })
+  try {
+    await autoUpdater.downloadUpdate()
+  } catch (error) {
+    updateDownloading = false
+    mainWindow?.setProgressBar(-1)
+    const message = error instanceof Error ? error.message : '请稍后重试，或从 GitHub Releases 手动下载安装包。'
+    publishUpdateState({ phase: 'error', message })
+  }
+}
+
+function installDownloadedUpdate() {
+  if (updateState.phase !== 'downloaded') return
+  forceQuit = true
+  setImmediate(() => autoUpdater.quitAndInstall(false, true))
 }
 
 function configureAutoUpdater() {
@@ -256,72 +283,48 @@ function configureAutoUpdater() {
   autoUpdater.autoInstallOnAppQuit = true
   autoUpdater.allowPrerelease = false
 
-  autoUpdater.on('update-available', async (info) => {
-    if (updatePromptOpen || updateDownloading) return
-    updatePromptOpen = true
-    const result = await showDesktopMessage({
-      type: 'info',
-      title: '发现新版本',
-      message: `Launchline ${info.version} 已发布`,
-      detail: `当前版本为 ${electronApp.getVersion()}。是否现在下载更新？`,
-      buttons: ['下载更新', '稍后提醒'],
-      defaultId: 0,
-      cancelId: 1,
-      noLink: true,
-    })
-    updatePromptOpen = false
-    if (result.response !== 0) return
+  autoUpdater.on('checking-for-update', () => {
+    publishUpdateState({ phase: 'checking', percent: undefined, message: undefined })
+  })
 
-    updateDownloading = true
-    try {
-      await autoUpdater.downloadUpdate()
-    } catch (error) {
-      updateDownloading = false
-      mainWindow?.setProgressBar(-1)
-      await showDesktopMessage({
-        type: 'error',
-        title: '更新下载失败',
-        message: '无法下载 Launchline 更新',
-        detail: error instanceof Error ? error.message : '请稍后重试，或从 GitHub Releases 手动下载安装包。',
-        buttons: ['关闭'],
-      })
-    }
+  autoUpdater.on('update-not-available', () => {
+    publishUpdateState({ phase: 'up-to-date', availableVersion: undefined, percent: undefined, message: undefined })
+  })
+
+  autoUpdater.on('update-available', (info) => {
+    publishUpdateState({ phase: 'available', availableVersion: info.version, percent: 0, message: undefined })
   })
 
   autoUpdater.on('download-progress', (progress) => {
-    mainWindow?.setProgressBar(Math.max(0, Math.min(1, progress.percent / 100)))
+    const percent = Math.max(0, Math.min(100, progress.percent))
+    publishUpdateState({ phase: 'downloading', percent })
+    mainWindow?.setProgressBar(percent / 100)
   })
 
-  autoUpdater.on('update-downloaded', async (info) => {
+  autoUpdater.on('update-downloaded', (info) => {
     updateDownloading = false
     mainWindow?.setProgressBar(-1)
-    const result = await showDesktopMessage({
-      type: 'info',
-      title: '更新已下载',
-      message: `Launchline ${info.version} 已准备好`,
-      detail: '重启应用后会自动完成安装。',
-      buttons: ['立即重启并安装', '下次启动时安装'],
-      defaultId: 0,
-      cancelId: 1,
-      noLink: true,
-    })
-    if (result.response === 0) {
-      forceQuit = true
-      autoUpdater.quitAndInstall(false, true)
-    }
+    publishUpdateState({ phase: 'downloaded', availableVersion: info.version, percent: 100, message: undefined })
   })
 
   autoUpdater.on('error', (error) => {
     console.error('[auto-update]', error)
+    if (!updateDownloading) publishUpdateState({ phase: 'error', message: error.message })
   })
 
-  const checkForUpdates = () => {
-    if (!updateDownloading && !updatePromptOpen) {
-      void autoUpdater.checkForUpdates().catch((error) => console.error('[auto-update]', error))
+  checkForUpdates = async () => {
+    if (updateDownloading || updateState.phase === 'checking' || updateState.phase === 'downloaded') return
+    publishUpdateState({ phase: 'checking', percent: undefined, message: undefined })
+    try {
+      await autoUpdater.checkForUpdates()
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '检查更新失败'
+      console.error('[auto-update]', error)
+      publishUpdateState({ phase: 'error', message })
     }
   }
-  setTimeout(checkForUpdates, 8000)
-  updateTimer = setInterval(checkForUpdates, 4 * 60 * 60 * 1000)
+  void checkForUpdates()
+  updateTimer = setInterval(() => void checkForUpdates(), 4 * 60 * 60 * 1000)
 }
 
 ipcMain.handle('desktop:select-directory', async (_event, initialPath: string) => {
@@ -335,6 +338,10 @@ ipcMain.handle('desktop:select-directory', async (_event, initialPath: string) =
     : await dialog.showOpenDialog(options)
   return result.canceled ? null : result.filePaths[0] || null
 })
+ipcMain.handle('desktop:get-update-state', () => updateState)
+ipcMain.on('desktop:check-for-updates', () => void checkForUpdates())
+ipcMain.on('desktop:download-update', () => void downloadAvailableUpdate())
+ipcMain.on('desktop:install-update', installDownloadedUpdate)
 ipcMain.on('desktop:restore-main', showMainWindow)
 ipcMain.on('desktop:hide-floating', () => floatingWindow?.hide())
 ipcMain.on('desktop:quit', quitApplication)

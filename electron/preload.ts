@@ -13,6 +13,15 @@ contextBridge.exposeInMainWorld('launchlineDesktop', {
   restoreMainWindow: () => ipcRenderer.send('desktop:restore-main'),
   hideFloatingBall: () => ipcRenderer.send('desktop:hide-floating'),
   quitApplication: () => ipcRenderer.send('desktop:quit'),
+  getUpdateState: () => ipcRenderer.invoke('desktop:get-update-state'),
+  checkForUpdates: () => ipcRenderer.send('desktop:check-for-updates'),
+  downloadUpdate: () => ipcRenderer.send('desktop:download-update'),
+  installUpdate: () => ipcRenderer.send('desktop:install-update'),
+  onUpdateState: (callback: (state: unknown) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, state: unknown) => callback(state)
+    ipcRenderer.on('desktop:update-state', listener)
+    return () => ipcRenderer.removeListener('desktop:update-state', listener)
+  },
   onDeploymentCount: (callback: (count: number) => void) => {
     const listener = (_event: Electron.IpcRendererEvent, count: number) => callback(count)
     ipcRenderer.on('desktop:deployment-count', listener)

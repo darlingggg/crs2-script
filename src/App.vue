@@ -9,6 +9,7 @@ import {
   ChevronRight,
   CircleAlert,
   Clock3,
+  Download,
   Eraser,
   FileJson,
   FolderInput,
@@ -150,10 +151,13 @@ const deploymentOwnerAccess = ref<OwnerAccess | null>(null)
 const deploymentForm = ref({ commitMessage: '', mergeTitle: '', mergeDescription: '', useCrsAiTitle: true, reviewerName: '' })
 const errorMessage = ref('')
 const toast = ref('')
+const updateState = ref<DesktopUpdateState>({ phase: 'idle', currentVersion: appVersion })
+const updateDialogOpen = ref(false)
 let toastTimer: number | undefined
 const deploymentPollTimers = new Map<string, number>()
 let directoryDragDepth = 0
 let removeDesktopOpenPathListener: (() => void) | undefined
+let removeUpdateStateListener: (() => void) | undefined
 
 const deployment = computed(() => deployments.value.find((item) => item.id === activeDeploymentId.value) || null)
 const deploymentIsRunning = computed(() => deployment.value?.status === 'running')
@@ -169,6 +173,9 @@ const terminalShellLabel = desktopPlatform === 'darwin'
   : desktopPlatform === 'win32'
     ? 'Microsoft Windows CMD'
     : 'POSIX shell'
+const updatePercent = computed(() => Math.round(updateState.value.percent || 0))
+const updateVisible = computed(() => desktopPlatform === 'win32' && updateState.value.phase !== 'idle')
+const updateDialogVisible = computed(() => updateDialogOpen.value && ['available', 'downloading', 'downloaded', 'error'].includes(updateState.value.phase))
 const currentProjectDeployment = computed(() => {
   const path = (repository.value?.root || projectPath.value).replace(/[\\/]+$/, '').toLowerCase()
   if (!path) return undefined
@@ -249,6 +256,10 @@ watch(
     if (deploymentLogOutput.value) deploymentLogOutput.value.scrollTop = deploymentLogOutput.value.scrollHeight
   },
 )
+
+watch(() => updateState.value.phase, (phase) => {
+  if (['available', 'downloaded', 'error'].includes(phase)) updateDialogOpen.value = true
+})
 
 async function inspect(path = projectPath.value) {
   if (!path.trim()) {
@@ -692,6 +703,18 @@ function handleFocus() {
   if (projectPath.value && !isBusy.value) inspect()
 }
 
+function handleUpdateAction() {
+  if (updateState.value.phase === 'available') {
+    updateDialogOpen.value = true
+    window.launchlineDesktop?.downloadUpdate()
+  }
+  else if (updateState.value.phase === 'downloaded') window.launchlineDesktop?.installUpdate()
+  else if (updateState.value.phase === 'error') {
+    updateDialogOpen.value = false
+    window.launchlineDesktop?.checkForUpdates()
+  }
+}
+
 onMounted(() => {
   window.addEventListener('focus', handleFocus)
   document.documentElement.dataset.platform = desktopPlatform
@@ -700,11 +723,17 @@ onMounted(() => {
     projectPath.value = path
     void inspect(path)
   })
+  const desktopBridge = window.launchlineDesktop
+  if (desktopBridge) {
+    removeUpdateStateListener = desktopBridge.onUpdateState((state) => (updateState.value = state))
+    void desktopBridge.getUpdateState().then((state) => (updateState.value = state))
+  }
   void restoreDeployments()
 })
 onBeforeUnmount(() => {
   window.removeEventListener('focus', handleFocus)
   removeDesktopOpenPathListener?.()
+  removeUpdateStateListener?.()
   document.body.style.overflow = ''
   window.clearTimeout(toastTimer)
   deploymentPollTimers.forEach((timer) => window.clearInterval(timer))
@@ -719,8 +748,26 @@ onBeforeUnmount(() => {
         <span class="brand-mark"><Rocket :size="17" stroke-width="2.4" /></span>
         <span>Launchline</span>
       </a>
-      <div class="topbar-meta">
+      <div class="topbar-meta" :class="{ updating: updateVisible }">
         <span class="local-pill"><span class="live-dot"></span>本地运行</span>
+        <div v-if="updateVisible" class="update-status" :class="updateState.phase" role="status" :title="updateState.message">
+          <LoaderCircle v-if="updateState.phase === 'checking'" :size="13" class="spinning" />
+          <template v-if="updateState.phase === 'checking'">检查更新</template>
+          <template v-else-if="updateState.phase === 'up-to-date'"><Check :size="13" />已是最新</template>
+          <template v-else-if="updateState.phase === 'downloading'">
+            <Download :size="13" />下载 {{ updatePercent }}%
+            <span class="update-progress" aria-hidden="true"><i :style="{ width: `${updatePercent}%` }"></i></span>
+          </template>
+          <button v-else-if="updateState.phase === 'available'" type="button" @click="handleUpdateAction">
+            <Download :size="13" />下载 v{{ updateState.availableVersion }}
+          </button>
+          <button v-else-if="updateState.phase === 'downloaded'" type="button" @click="handleUpdateAction">
+            <RefreshCw :size="13" />重启安装 v{{ updateState.availableVersion }}
+          </button>
+          <button v-else-if="updateState.phase === 'error'" type="button" @click="handleUpdateAction">
+            <CircleAlert :size="13" />检查失败，重试
+          </button>
+        </div>
         <span class="version">v{{ appVersion }}</span>
       </div>
     </header>
@@ -1252,6 +1299,63 @@ onBeforeUnmount(() => {
             <button class="dialog-danger" type="button" @click="cancelDeployment">取消部署</button>
           </template>
           <button v-else class="dialog-primary" type="button" @click="closeDeployDialog">关闭</button>
+        </footer>
+      </section>
+    </div>
+
+    <div v-if="updateDialogVisible" class="update-dialog-backdrop" role="presentation">
+      <section class="update-dialog" role="dialog" aria-modal="true" aria-labelledby="update-dialog-title">
+        <header class="update-dialog-header">
+          <div class="update-dialog-title">
+            <span :class="updateState.phase">
+              <Download v-if="updateState.phase === 'available' || updateState.phase === 'downloading'" :size="19" />
+              <Check v-else-if="updateState.phase === 'downloaded'" :size="19" />
+              <CircleAlert v-else :size="19" />
+            </span>
+            <div>
+              <small>APPLICATION UPDATE</small>
+              <h2 id="update-dialog-title">
+                {{ updateState.phase === 'available' ? '发现新版本' : updateState.phase === 'downloading' ? '正在下载更新' : updateState.phase === 'downloaded' ? '更新已准备好' : '更新失败' }}
+              </h2>
+            </div>
+          </div>
+          <button class="dialog-close" type="button" title="稍后处理" aria-label="稍后处理" @click="updateDialogOpen = false"><X :size="17" /></button>
+        </header>
+
+        <div class="update-dialog-body">
+          <div class="update-version-route">
+            <span><small>当前版本</small><strong>v{{ updateState.currentVersion }}</strong></span>
+            <ArrowRight :size="18" />
+            <span><small>目标版本</small><strong>v{{ updateState.availableVersion || '—' }}</strong></span>
+          </div>
+
+          <template v-if="updateState.phase === 'available'">
+            <p>新版本已发布，可以立即下载。下载期间仍可继续使用当前项目。</p>
+          </template>
+          <template v-else-if="updateState.phase === 'downloading'">
+            <div class="update-download-heading"><span>下载安装包</span><strong>{{ updatePercent }}%</strong></div>
+            <div class="update-download-track" role="progressbar" aria-label="更新下载进度" aria-valuemin="0" aria-valuemax="100" :aria-valuenow="updatePercent">
+              <span :style="{ width: `${updatePercent}%` }"></span>
+            </div>
+            <p>可以收起窗口继续工作，下载进度会保留在顶部状态栏。</p>
+          </template>
+          <template v-else-if="updateState.phase === 'downloaded'">
+            <p>安装包已经下载完成。点击重启后会退出当前应用、完成安装并自动打开新版本。</p>
+          </template>
+          <template v-else>
+            <p class="update-error-message">{{ updateState.message || '暂时无法获取更新，请检查网络后重试。' }}</p>
+          </template>
+        </div>
+
+        <footer class="update-dialog-actions">
+          <button class="dialog-secondary" type="button" @click="updateDialogOpen = false">
+            {{ updateState.phase === 'downloading' ? '后台下载' : updateState.phase === 'downloaded' ? '下次启动安装' : '稍后处理' }}
+          </button>
+          <button v-if="updateState.phase !== 'downloading'" class="dialog-primary" type="button" @click="handleUpdateAction">
+            <Download v-if="updateState.phase === 'available'" :size="15" />
+            <RefreshCw v-else :size="15" />
+            {{ updateState.phase === 'available' ? '下载更新' : updateState.phase === 'downloaded' ? '立即重启并安装' : '重新检查' }}
+          </button>
         </footer>
       </section>
     </div>
