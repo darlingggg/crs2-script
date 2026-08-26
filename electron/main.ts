@@ -14,9 +14,11 @@ import {
   Tray,
   type MessageBoxOptions,
 } from 'electron'
-import { autoUpdater } from 'electron-updater'
+import electronUpdater from 'electron-updater'
 import { getDeploymentsSnapshot, getRunningDeploymentCount } from '../server/deployment.ts'
 import { startServer, stopServer } from '../server/index.ts'
+
+const { autoUpdater } = electronUpdater
 
 const currentDir = dirname(fileURLToPath(import.meta.url))
 const configuredServerPort = Number(process.env.PORT || 0)
