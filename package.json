@@ -4,7 +4,7 @@
   "description": "Local Git deployment workflow desktop tool",
   "author": "junyu.hou",
   "private": true,
-  "version": "0.1.7",
+  "version": "0.1.8",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/darlingggg/crs2-script.git"
@@ -124,7 +124,8 @@
       "perMachine": false,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "shortcutName": "Launchline"
+      "shortcutName": "Launchline",
+      "include": "build/installer.nsh"
     },
     "linux": {
       "category": "Development",
