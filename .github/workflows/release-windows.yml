@@ -38,7 +38,8 @@ jobs:
           }
 
       - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+        # Electron is downloaded by electron-builder during the publish step.
+        run: pnpm install --frozen-lockfile --ignore-scripts --reporter=append-only
 
       - name: Build and publish release
         run: pnpm release:win

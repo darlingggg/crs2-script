@@ -4,7 +4,7 @@
   "description": "Local Git deployment workflow desktop tool",
   "author": "junyu.hou",
   "private": true,
-  "version": "0.1.1",
+  "version": "0.1.2",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/darlingggg/crs2-script.git"
@@ -22,7 +22,7 @@
     "dist:desktop": "pnpm build:desktop && electron-builder --dir",
     "dist:mac": "pnpm build:desktop && electron-builder --mac",
     "dist:win": "pnpm build:desktop && electron-builder --win nsis -c.electronDist=node_modules/electron/dist",
-    "release:win": "pnpm build:desktop && electron-builder --win nsis -c.electronDist=node_modules/electron/dist --publish always",
+    "release:win": "pnpm build:desktop && electron-builder --win nsis --publish always",
     "rebuild:desktop": "electron-builder install-app-deps",
     "start": "tsx server/index.ts",
     "typecheck": "vue-tsc -b"
