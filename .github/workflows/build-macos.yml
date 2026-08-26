@@ -1,0 +1,43 @@
+name: Build macOS installer
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-macos:
+    runs-on: macos-14
+    permissions:
+      contents: read
+    env:
+      CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11.5.2
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build universal macOS package
+        run: pnpm dist:mac
+
+      - name: Upload installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: launchline-macos-universal
+          path: |
+            release/*.dmg
+            release/*.zip
+            release/*.blockmap
+          if-no-files-found: error

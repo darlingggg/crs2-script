@@ -1,0 +1,113 @@
+{
+  "version": 1,
+  "remote": "origin",
+  "targetBranch": "master",
+  "defaults": {
+    "commitMessage": "chore: 更新部署前配置"
+  },
+  "display": {
+    "testEnvironment": "国内(测试)",
+    "testTask": "mtat-prod",
+    "productionEnvironment": "国内(PROD)"
+  },
+  "mergePoll": {
+    "intervalMs": 10000,
+    "maxAttempts": 60
+  },
+  "mergeRetry": {
+    "intervalMs": 10000,
+    "maxAttempts": 3,
+    "retryOn": ["本分支可能已经合并/尚未提交到GitLab"]
+  },
+  "productionPoll": {
+    "intervalMs": 60000,
+    "maxAttempts": 10
+  },
+  "commands": {
+    "submodules": {
+      "label": "更新子包",
+      "program": "git",
+      "args": ["submodule", "update", "--remote", "--recursive"],
+      "timeoutMs": 300000
+    },
+    "stage": {
+      "label": "暂存本地改动",
+      "program": "git",
+      "args": ["add", "-A"],
+      "timeoutMs": 60000
+    },
+    "commit": {
+      "label": "提交本地改动",
+      "program": "git",
+      "args": ["commit", "-m", "{{commitMessage}}"],
+      "timeoutMs": 120000
+    },
+    "fetch": {
+      "label": "同步远程分支",
+      "program": "git",
+      "args": ["fetch", "{{remote}}", "--prune"],
+      "timeoutMs": 180000
+    },
+    "push": {
+      "label": "推送当前分支",
+      "program": "git",
+      "args": ["push", "--set-upstream", "{{remote}}", "{{sourceBranch}}"],
+      "timeoutMs": 300000
+    },
+    "merge": {
+      "label": "创建并合并代码",
+      "program": "crs2",
+      "args": ["em"],
+      "interactive": true,
+      "responses": [
+        { "prompt": "请选择项目评审人", "value": "{{reviewerKeys}}", "delayMs": 250, "optional": true },
+        { "prompt": "请选择项目评审Owner", "value": "{{reviewerKeys}}", "delayMs": 250, "optional": true },
+        { "prompt": "请输入本次Merge的总结标题", "value": "{{mergeTitleResponse}}", "delayMs": 250 },
+        { "prompt": "请输入本次Merge的具体描述信息", "value": "{{mergeDescription}}", "delayMs": 250 }
+      ],
+      "timeoutMs": 300000
+    },
+    "switchTarget": {
+      "label": "切换主分支",
+      "program": "git",
+      "args": ["switch", "{{targetBranch}}"],
+      "timeoutMs": 60000
+    },
+    "switchTargetFromRemote": {
+      "label": "创建本地主分支",
+      "program": "git",
+      "args": ["switch", "--track", "-c", "{{targetBranch}}", "{{remote}}/{{targetBranch}}"],
+      "timeoutMs": 60000
+    },
+    "pullTarget": {
+      "label": "等待合并同步",
+      "program": "git",
+      "args": ["pull", "{{remote}}", "{{targetBranch}}"],
+      "timeoutMs": 180000
+    },
+    "testRelease": {
+      "label": "发布国内测试",
+      "program": "crs2",
+      "args": ["er"],
+      "interactive": true,
+      "responses": [
+        { "prompt": "请选择环境", "value": "", "delayMs": 250 },
+        { "prompt": "请选择你需要发版的任务", "value": "\u001b[B\u001b[B", "delayMs": 250 },
+        { "prompt": "(Y/n)", "value": "y", "delayMs": 250 }
+      ],
+      "timeoutMs": 600000
+    },
+    "productionRelease": {
+      "label": "发布国内生产",
+      "program": "crs2",
+      "args": ["er"],
+      "interactive": true,
+      "responses": [
+        { "prompt": "请选择环境", "value": "\u001b[B\u001b[B", "delayMs": 250 },
+        { "prompt": "请选择你需要发版的任务", "value": "\u001b[B\u001b[B", "delayMs": 250, "optional": true },
+        { "prompt": "(Y/n)", "value": "y", "delayMs": 250 }
+      ],
+      "timeoutMs": 300000
+    }
+  }
+}

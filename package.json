@@ -1,0 +1,136 @@
+{
+  "name": "launchline",
+  "productName": "Launchline",
+  "description": "Local Git deployment workflow desktop tool",
+  "author": "junyu.hou",
+  "private": true,
+  "version": "0.1.1",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/darlingggg/crs2-script.git"
+  },
+  "type": "module",
+  "main": "dist-electron/main.js",
+  "scripts": {
+    "dev": "concurrently -k -n api,web -c yellow,cyan \"pnpm dev:api\" \"pnpm dev:web\"",
+    "dev:api": "tsx watch server/index.ts",
+    "dev:web": "vite",
+    "build": "vue-tsc -b && vite build",
+    "build:electron": "tsup --config tsup.electron.config.ts",
+    "build:desktop": "pnpm build && pnpm build:electron",
+    "desktop:dev": "pnpm build:desktop && electron .",
+    "dist:desktop": "pnpm build:desktop && electron-builder --dir",
+    "dist:mac": "pnpm build:desktop && electron-builder --mac",
+    "dist:win": "pnpm build:desktop && electron-builder --win nsis -c.electronDist=node_modules/electron/dist",
+    "release:win": "pnpm build:desktop && electron-builder --win nsis -c.electronDist=node_modules/electron/dist --publish always",
+    "rebuild:desktop": "electron-builder install-app-deps",
+    "start": "tsx server/index.ts",
+    "typecheck": "vue-tsc -b"
+  },
+  "dependencies": {
+    "electron-updater": "^6.8.9",
+    "express": "^5.1.0",
+    "lucide-vue-next": "^0.468.0",
+    "node-pty": "^1.1.0",
+    "vue": "^3.5.13"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.0",
+    "@types/node": "^22.10.2",
+    "@types/semver": "^7.8.0",
+    "@vitejs/plugin-vue": "^5.2.1",
+    "concurrently": "^9.1.2",
+    "electron": "^44.0.0",
+    "electron-builder": "^26.15.4",
+    "playwright-core": "^1.62.1",
+    "tsup": "^8.5.1",
+    "tsx": "^4.19.2",
+    "typescript": "~5.7.2",
+    "vite": "^6.0.5",
+    "vue-tsc": "^2.2.0"
+  },
+  "packageManager": "pnpm@11.5.2",
+  "build": {
+    "appId": "com.launchline.desktop",
+    "productName": "Launchline",
+    "artifactName": "Launchline-${version}-${os}-${arch}.${ext}",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "dist-electron/**/*",
+      "electron/floating.html",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "deploy.workflow.json",
+        "to": "deploy.workflow.json"
+      },
+      {
+        "from": "project-owner-map.json",
+        "to": "project-owner-map.json"
+      }
+    ],
+    "asarUnpack": [
+      "node_modules/node-pty/**/*"
+    ],
+    "npmRebuild": false,
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "darlingggg",
+        "repo": "crs2-script",
+        "releaseType": "release"
+      }
+    ],
+    "mac": {
+      "category": "public.app-category.developer-tools",
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "universal"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "universal"
+          ]
+        }
+      ],
+      "extendInfo": {
+        "CFBundleDocumentTypes": [
+          {
+            "CFBundleTypeName": "Project Folder",
+            "CFBundleTypeRole": "Viewer",
+            "LSHandlerRank": "Alternate",
+            "LSItemContentTypes": [
+              "public.folder"
+            ]
+          }
+        ]
+      }
+    },
+    "win": {
+      "target": [
+        "nsis"
+      ]
+    },
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Launchline"
+    },
+    "linux": {
+      "category": "Development",
+      "target": [
+        "AppImage"
+      ]
+    }
+  }
+}
