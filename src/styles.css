@@ -175,6 +175,12 @@ button:disabled { cursor: not-allowed; opacity: 0.45; }
 .repo-facts dt { display: flex; align-items: center; gap: 6px; margin-bottom: 8px; color: var(--muted); font-size: 10px; }
 .repo-facts dd { margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 500 12px 'DM Mono', monospace; color: var(--ink); }
 .repo-facts dd.warning { color: var(--orange); }
+.branch-fact { position: relative; display: flex; align-items: center; gap: 6px; overflow: visible !important; }
+.branch-fact select { min-width: 0; width: 100%; height: 28px; padding: 0 26px 0 8px; border: 1px solid #c7ccc7; border-radius: 4px; outline: 0; background: #fff; color: inherit; font: inherit; cursor: pointer; }
+.branch-fact select:hover:not(:disabled) { border-color: #9ca49e; }
+.branch-fact select:focus-visible { border-color: var(--blue); box-shadow: 0 0 0 3px rgba(48, 111, 138, 0.12); }
+.branch-fact select:disabled { cursor: not-allowed; opacity: 0.58; }
+.branch-fact svg { flex: 0 0 auto; color: var(--blue); }
 
 .workspace-status { min-height: 69px; display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 11px; padding: 14px 15px; border: 1px solid; }
 .workspace-status.clean { color: var(--green); border-color: #b6d5c4; background: var(--green-soft); }

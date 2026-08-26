@@ -26,6 +26,7 @@ type GitResult = {
   isGitRepository: boolean
   root?: string
   branch?: string
+  localBranches?: string[]
   detached?: boolean
   isProtectedBranch?: boolean
   isClean?: boolean
@@ -139,14 +140,16 @@ async function inspectRepository(path: string): Promise<GitResult> {
     const inside = await git(normalizedPath, ['rev-parse', '--is-inside-work-tree'])
     if (inside !== 'true') throw new Error('Not a Git working tree')
 
-    const [root, branch, status, commit, remote, gitUserName] = await Promise.all([
+    const [root, branch, localBranchesOutput, status, commit, remote, gitUserName] = await Promise.all([
       git(normalizedPath, ['rev-parse', '--show-toplevel']),
       optionalGit(normalizedPath, ['branch', '--show-current']),
+      gitRaw(normalizedPath, ['for-each-ref', '--format=%(refname:short)', '--sort=refname', 'refs/heads']),
       gitRaw(normalizedPath, ['status', '--porcelain=v1', '--untracked-files=all']).then((output) => output.trimEnd()),
       optionalGit(normalizedPath, ['rev-parse', '--short=8', 'HEAD']),
       optionalGit(normalizedPath, ['remote', 'get-url', 'origin']),
       optionalGit(normalizedPath, ['config', 'user.name']),
     ])
+    const localBranches = localBranchesOutput.split(/\r?\n/).map((item) => item.trim()).filter(Boolean)
     const changes = status ? status.split(/\r?\n/).filter(Boolean) : []
     const packageOwner = await inspectPackageOwner(root, gitUserName)
 
@@ -155,6 +158,7 @@ async function inspectRepository(path: string): Promise<GitResult> {
       isGitRepository: true,
       root,
       branch: branch || 'DETACHED HEAD',
+      localBranches,
       detached: !branch,
       isProtectedBranch: branch === 'main' || branch === 'master',
       isClean: changes.length === 0,
@@ -179,6 +183,43 @@ app.get('/api/repository', async (request, response) => {
   const path = typeof request.query.path === 'string' ? request.query.path : ''
   if (!path) return response.status(400).json({ error: '请选择项目目录' })
   response.json(await inspectRepository(path))
+})
+
+app.post('/api/repository/switch-branch', async (request, response) => {
+  const path = request.body?.path
+  const branch = typeof request.body?.branch === 'string' ? request.body.branch.trim() : ''
+  if (!validDirectory(path)) return response.status(400).json({ error: '项目目录无效' })
+  if (!branch) return response.status(400).json({ error: '请选择需要切换的本地分支' })
+
+  const before = await inspectRepository(path)
+  if (!before.isGitRepository || !before.root) {
+    return response.status(400).json({ error: '该目录未被 Git 管理' })
+  }
+  if (!before.isClean) {
+    return response.status(409).json({ error: '工作区存在未提交改动，请先处理后再切换分支' })
+  }
+  if (!before.localBranches?.includes(branch)) {
+    return response.status(400).json({ error: `本地分支不存在：${branch}` })
+  }
+  if (before.branch === branch) {
+    return response.json({ ok: true, output: `当前已在 ${branch} 分支`, repository: before })
+  }
+
+  try {
+    const { stdout, stderr } = await execFileAsync('git', ['-C', before.root, 'switch', '--', branch], {
+      encoding: 'utf8',
+      windowsHide: true,
+      maxBuffer: 2 * 1024 * 1024,
+    })
+    response.json({
+      ok: true,
+      output: [stdout, stderr].filter(Boolean).join('\n').trim() || `已切换到 ${branch} 分支`,
+      repository: await inspectRepository(before.root),
+    })
+  } catch (error) {
+    const failure = error as { stderr?: string; message?: string }
+    response.status(409).json({ error: failure.stderr?.trim() || failure.message || '分支切换失败' })
+  }
 })
 
 app.post('/api/select-directory', async (request, response) => {

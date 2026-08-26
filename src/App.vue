@@ -38,6 +38,7 @@ type Repository = {
   isGitRepository: boolean
   root?: string
   branch?: string
+  localBranches?: string[]
   detached?: boolean
   isProtectedBranch?: boolean
   isClean?: boolean
@@ -122,6 +123,7 @@ const projectPath = ref('')
 const repository = ref<Repository | null>(null)
 const isInspecting = ref(false)
 const isSelecting = ref(false)
+const isSwitchingBranch = ref(false)
 const isDraggingDirectory = ref(false)
 const isUpdatingSubmodules = ref(false)
 const isSyncingPackageOwner = ref(false)
@@ -173,7 +175,7 @@ const currentProjectDeployment = computed(() => {
   return deployments.value.find((item) => item.status === 'running' && item.path.replace(/[\\/]+$/, '').toLowerCase() === path)
 })
 const projectIsDeploying = computed(() => Boolean(currentProjectDeployment.value))
-const isBusy = computed(() => isInspecting.value || isSelecting.value || isUpdatingSubmodules.value || isSyncingPackageOwner.value || isExecutingCommand.value)
+const isBusy = computed(() => isInspecting.value || isSelecting.value || isSwitchingBranch.value || isUpdatingSubmodules.value || isSyncingPackageOwner.value || isExecutingCommand.value)
 const hasRepository = computed(() => repository.value?.isGitRepository === true)
 const hasOrigin = computed(() => Boolean(repository.value?.remote && repository.value.remote !== '未配置 origin'))
 const canDeploy = computed(() => Boolean(
@@ -282,6 +284,41 @@ function handlePathInput() {
     clearTerminal()
   }
   errorMessage.value = ''
+}
+
+async function switchBranch(event: Event) {
+  const select = event.currentTarget as HTMLSelectElement
+  const branch = select.value
+  const currentBranch = repository.value?.branch || ''
+  if (!hasRepository.value || !branch || branch === currentBranch || isSwitchingBranch.value) return
+
+  isSwitchingBranch.value = true
+  errorMessage.value = ''
+  const startedAt = Date.now()
+  try {
+    const response = await fetch('/api/repository/switch-branch', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: repository.value?.root || projectPath.value, branch }),
+    })
+    const data = await response.json()
+    if (!response.ok) throw new Error(data.error || '分支切换失败')
+
+    if (data.repository) repository.value = data.repository
+    terminalEntries.value.push({
+      id: Date.now(),
+      command: `git switch ${branch}`,
+      output: data.output || `已切换到 ${branch} 分支`,
+      exitCode: 0,
+      durationMs: Date.now() - startedAt,
+    })
+    showToast(`已切换到 ${branch} 分支`)
+  } catch (error) {
+    errorMessage.value = error instanceof Error ? error.message : '分支切换失败'
+    select.value = currentBranch
+  } finally {
+    isSwitchingBranch.value = false
+  }
 }
 
 function decodeDroppedPath(value: string) {
@@ -805,7 +842,20 @@ onBeforeUnmount(() => {
             <dl class="repo-facts">
               <div>
                 <dt><GitBranch :size="15" />当前分支</dt>
-                <dd :class="{ warning: repository?.isProtectedBranch }">{{ repository?.branch }}</dd>
+                <dd class="branch-fact" :class="{ warning: repository?.isProtectedBranch }">
+                  <select
+                    :value="repository?.branch"
+                    :disabled="!repository?.isClean || isBusy || projectIsDeploying || (repository?.localBranches?.length || 0) < 2"
+                    :title="!repository?.isClean ? '工作区存在未提交改动，无法切换分支' : projectIsDeploying ? '当前项目正在部署' : '切换本地分支'"
+                    aria-label="切换本地分支"
+                    @change="switchBranch"
+                  >
+                    <option v-for="branch in repository?.localBranches" :key="branch" :value="branch">
+                      {{ branch }}
+                    </option>
+                  </select>
+                  <LoaderCircle v-if="isSwitchingBranch" :size="13" class="spinning" />
+                </dd>
               </div>
               <div>
                 <dt><GitCommitHorizontal :size="15" />当前提交</dt>
