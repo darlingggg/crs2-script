@@ -177,8 +177,14 @@ function createProjectWorkspace(path = '', savedProject?: SavedProjectRecord): P
   }
 }
 
-const projectTabs = ref<ProjectWorkspace[]>([createProjectWorkspace()])
-const activeProjectId = ref(projectTabs.value[0].id)
+const projectTabs = ref<ProjectWorkspace[]>([])
+function appendProjectWorkspace(path = '', savedProject?: SavedProjectRecord) {
+  projectTabs.value.push(createProjectWorkspace(path, savedProject))
+  // Async repository checks must update the proxy created by the reactive array.
+  return projectTabs.value.at(-1)!
+}
+const initialProject = appendProjectWorkspace()
+const activeProjectId = ref(initialProject.id)
 const activeProject = computed(() => projectTabs.value.find((item) => item.id === activeProjectId.value) || projectTabs.value[0])
 const projectPath = computed({ get: () => activeProject.value.path, set: (value: string) => (activeProject.value.path = value) })
 const repository = computed({ get: () => activeProject.value.repository, set: (value: Repository | null) => (activeProject.value.repository = value) })
@@ -353,7 +359,7 @@ function closeProjectTab(id: string) {
     || project?.isExecutingCommand
   ) return
   projectTabs.value.splice(index, 1)
-  if (!projectTabs.value.length) projectTabs.value.push(createProjectWorkspace())
+  if (!projectTabs.value.length) appendProjectWorkspace()
   if (activeProjectId.value === id) {
     activeProjectId.value = projectTabs.value[Math.min(index, projectTabs.value.length - 1)]!.id
   }
@@ -408,8 +414,7 @@ async function openProjectPaths(paths: string[], records: SavedProjectRecord[] =
     const normalized = normalizePath(path)
     let project = projectTabs.value.find((item) => normalizePath(item.repository?.root || item.path) === normalized)
     if (!project) {
-      project = createProjectWorkspace(path, recordByPath.get(normalized))
-      projectTabs.value.push(project)
+      project = appendProjectWorkspace(path, recordByPath.get(normalized))
     }
     opened.push(project)
   }
