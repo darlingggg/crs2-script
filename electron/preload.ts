@@ -6,6 +6,7 @@ contextBridge.exposeInMainWorld('launchlineDesktop', {
   selectDirectories: (initialPath: string) => ipcRenderer.invoke('desktop:select-directories', initialPath) as Promise<string[]>,
   getSavedProjects: () => ipcRenderer.invoke('desktop:saved-projects:list'),
   saveProject: (project: unknown) => ipcRenderer.invoke('desktop:saved-projects:save', project),
+  reorderSavedProjects: (paths: string[]) => ipcRenderer.invoke('desktop:saved-projects:reorder', paths),
   getPathForFile: (file: File) => webUtils.getPathForFile(file),
   onOpenPath: (callback: (path: string) => void) => {
     const listener = (_event: Electron.IpcRendererEvent, path: string) => callback(path)

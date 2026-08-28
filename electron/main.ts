@@ -393,12 +393,25 @@ ipcMain.handle('desktop:saved-projects:save', async (_event, project: SavedProje
     name: project.name || basename(project.path),
     developmentBranch: project.developmentBranch || 'dev',
   }
-  const nextProjects = [
-    nextProject,
-    ...projects.filter((item) => normalizedProjectPath(item.path) !== projectPath),
-  ]
-  await writeSavedProjects(nextProjects)
+  const existingIndex = projects.findIndex((item) => normalizedProjectPath(item.path) === projectPath)
+  if (existingIndex === -1) projects.unshift(nextProject)
+  else projects.splice(existingIndex, 1, nextProject)
+  await writeSavedProjects(projects)
   return nextProject
+})
+ipcMain.handle('desktop:saved-projects:reorder', async (_event, orderedPaths: string[]) => {
+  const projects = await readSavedProjects()
+  const order = new Map(
+    (Array.isArray(orderedPaths) ? orderedPaths : [])
+      .filter((path): path is string => typeof path === 'string' && Boolean(path.trim()))
+      .map((path, index) => [normalizedProjectPath(path), index]),
+  )
+  projects.sort((left, right) => {
+    const leftIndex = order.get(normalizedProjectPath(left.path)) ?? Number.MAX_SAFE_INTEGER
+    const rightIndex = order.get(normalizedProjectPath(right.path)) ?? Number.MAX_SAFE_INTEGER
+    return leftIndex - rightIndex
+  })
+  await writeSavedProjects(projects)
 })
 ipcMain.handle('desktop:get-update-state', () => updateState)
 ipcMain.on('desktop:check-for-updates', () => void checkForUpdates())

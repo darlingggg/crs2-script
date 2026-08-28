@@ -18,6 +18,7 @@ import {
   GitBranch,
   GitCommitHorizontal,
   GitPullRequestArrow,
+  GripVertical,
   Github,
   History,
   LoaderCircle,
@@ -203,6 +204,11 @@ const historyIndex = computed({ get: () => activeProject.value.historyIndex, set
 const errorMessage = computed({ get: () => activeProject.value.errorMessage, set: (value: string) => (activeProject.value.errorMessage = value) })
 const isSelecting = ref(false)
 const isDraggingDirectory = ref(false)
+const draggedProjectId = ref('')
+const projectDropTargetId = ref('')
+const projectDropPosition = ref<'before' | 'after'>('before')
+const addProjectsDialogOpen = ref(false)
+const batchProjectPaths = ref('')
 const terminalOutput = ref<HTMLElement | null>(null)
 const deploymentLogOutput = ref<HTMLElement | null>(null)
 const deploymentLogPinned = ref(true)
@@ -233,6 +239,7 @@ const dockDeployments = computed(() => [...deployments.value].sort((left, right)
   if (left.status !== 'running' && right.status === 'running') return 1
   return new Date(right.startedAt).getTime() - new Date(left.startedAt).getTime()
 }))
+const isDesktop = Boolean(window.launchlineDesktop)
 const desktopPlatform = window.launchlineDesktop?.platform || 'browser'
 const terminalShellLabel = desktopPlatform === 'darwin'
   ? 'macOS zsh'
@@ -277,6 +284,18 @@ const developmentBranchAvailable = computed(() => Boolean(
   repository.value?.localBranches?.includes(activeProject.value.developmentBranch),
 ))
 const isOnDevelopmentBranch = computed(() => repository.value?.branch === activeProject.value.developmentBranch)
+const batchProjectPathList = computed(() => {
+  const seen = new Set<string>()
+  return batchProjectPaths.value
+    .split(/\r?\n/)
+    .map((item) => decodeDroppedPath(item))
+    .filter((item) => {
+      const normalized = normalizePath(item)
+      if (!normalized || seen.has(normalized)) return false
+      seen.add(normalized)
+      return true
+    })
+})
 const checkedTime = computed(() => {
   if (!repository.value?.checkedAt) return '尚未检查'
   return new Intl.DateTimeFormat('zh-CN', {
@@ -340,6 +359,95 @@ function projectTabName(project: ProjectWorkspace) {
   return root.split(/[\\/]/).filter(Boolean).at(-1) || '新项目'
 }
 
+function projectWorkspaceIsBusy(project: ProjectWorkspace) {
+  return project.isInspecting
+    || project.isSwitchingBranch
+    || project.isUpdatingSubmodules
+    || project.isSyncingPackageOwner
+    || project.isExecutingCommand
+}
+
+async function persistProjectTabOrder() {
+  const savedPaths = projectTabs.value
+    .filter((project) => project.saved)
+    .map((project) => project.repository?.root || project.path)
+    .filter(Boolean)
+  if (!savedPaths.length) return
+
+  try {
+    if (window.launchlineDesktop) {
+      await window.launchlineDesktop.reorderSavedProjects(savedPaths)
+      return
+    }
+    const stored = JSON.parse(localStorage.getItem(browserSavedProjectKey) || '[]') as SavedProjectRecord[]
+    const storedByPath = new Map(stored.map((item) => [normalizePath(item.path), item]))
+    const ordered = savedPaths
+      .map((path) => storedByPath.get(normalizePath(path)))
+      .filter((item): item is SavedProjectRecord => Boolean(item))
+    const orderedPaths = new Set(ordered.map((item) => normalizePath(item.path)))
+    localStorage.setItem(browserSavedProjectKey, JSON.stringify([
+      ...ordered,
+      ...stored.filter((item) => !orderedPaths.has(normalizePath(item.path))),
+    ]))
+  } catch {
+    showToast('项目顺序保存失败')
+  }
+}
+
+function moveProjectTab(projectId: string, targetId: string, position: 'before' | 'after') {
+  if (!projectId || !targetId || projectId === targetId) return
+  const sourceIndex = projectTabs.value.findIndex((item) => item.id === projectId)
+  if (sourceIndex === -1) return
+  const [project] = projectTabs.value.splice(sourceIndex, 1)
+  const targetIndex = projectTabs.value.findIndex((item) => item.id === targetId)
+  if (!project) return
+  if (targetIndex === -1) {
+    projectTabs.value.splice(sourceIndex, 0, project)
+    return
+  }
+  projectTabs.value.splice(position === 'after' ? targetIndex + 1 : targetIndex, 0, project)
+  void persistProjectTabOrder()
+}
+
+function handleProjectDragStart(event: DragEvent, project: ProjectWorkspace) {
+  if (isBusy.value || projectWorkspaceIsBusy(project)) {
+    event.preventDefault()
+    return
+  }
+  draggedProjectId.value = project.id
+  event.dataTransfer?.setData('application/x-launchline-project', project.id)
+  if (event.dataTransfer) event.dataTransfer.effectAllowed = 'move'
+}
+
+function handleProjectDragOver(event: DragEvent, targetId: string) {
+  if (!draggedProjectId.value || draggedProjectId.value === targetId) {
+    projectDropTargetId.value = ''
+    return
+  }
+  const target = event.currentTarget as HTMLElement
+  const bounds = target.getBoundingClientRect()
+  projectDropTargetId.value = targetId
+  projectDropPosition.value = event.clientX < bounds.left + bounds.width / 2 ? 'before' : 'after'
+  if (event.dataTransfer) event.dataTransfer.dropEffect = 'move'
+}
+
+function finishProjectDrag() {
+  draggedProjectId.value = ''
+  projectDropTargetId.value = ''
+}
+
+function handleProjectDrop(targetId: string) {
+  moveProjectTab(draggedProjectId.value, targetId, projectDropPosition.value)
+  finishProjectDrag()
+}
+
+function moveProjectByKeyboard(projectId: string, direction: -1 | 1) {
+  const index = projectTabs.value.findIndex((item) => item.id === projectId)
+  const target = projectTabs.value[index + direction]
+  if (index === -1 || !target) return
+  moveProjectTab(projectId, target.id, direction < 0 ? 'before' : 'after')
+}
+
 function activateProject(id: string) {
   if (isBusy.value || id === activeProjectId.value) return
   activeProjectId.value = id
@@ -350,14 +458,7 @@ function activateProject(id: string) {
 function closeProjectTab(id: string) {
   const index = projectTabs.value.findIndex((item) => item.id === id)
   const project = projectTabs.value[index]
-  if (
-    index === -1
-    || project?.isInspecting
-    || project?.isSwitchingBranch
-    || project?.isUpdatingSubmodules
-    || project?.isSyncingPackageOwner
-    || project?.isExecutingCommand
-  ) return
+  if (index === -1 || !project || projectWorkspaceIsBusy(project)) return
   projectTabs.value.splice(index, 1)
   if (!projectTabs.value.length) appendProjectWorkspace()
   if (activeProjectId.value === id) {
@@ -403,8 +504,14 @@ async function inspect(path = projectPath.value) {
 }
 
 async function openProjectPaths(paths: string[], records: SavedProjectRecord[] = [], activate = true) {
-  const uniquePaths = [...new Set(paths.map((item) => item.trim()).filter(Boolean))]
-  if (!uniquePaths.length) return
+  const seen = new Set<string>()
+  const uniquePaths = paths.map((item) => item.trim()).filter((item) => {
+    const normalized = normalizePath(item)
+    if (!normalized || seen.has(normalized)) return false
+    seen.add(normalized)
+    return true
+  })
+  if (!uniquePaths.length) return []
   const recordByPath = new Map(records.map((item) => [normalizePath(item.path), item]))
   const blank = projectTabs.value.length === 1 && !projectTabs.value[0]?.path && !projectTabs.value[0]?.repository
   if (blank) projectTabs.value = []
@@ -420,6 +527,7 @@ async function openProjectPaths(paths: string[], records: SavedProjectRecord[] =
   }
   if (activate || blank) activeProjectId.value = opened[0]!.id
   await Promise.all(opened.map((project) => inspectWorkspace(project)))
+  return opened
 }
 
 function handlePathInput() {
@@ -558,29 +666,57 @@ async function handleDirectoryDrop(event: DragEvent) {
   if (isBusy.value) return
 
   const transfer = event.dataTransfer
-  const droppedFile = transfer?.files?.[0] as (File & { path?: string }) | undefined
-  let electronPath = ''
-  if (droppedFile && window.launchlineDesktop) {
+  const droppedPaths: string[] = []
+  for (const file of Array.from(transfer?.files || []) as Array<File & { path?: string }>) {
     try {
-      electronPath = window.launchlineDesktop.getPathForFile(droppedFile)
+      const path = window.launchlineDesktop?.getPathForFile(file) || file.path || ''
+      if (path) droppedPaths.push(path)
     } catch {
-      electronPath = ''
+      if (file.path) droppedPaths.push(file.path)
     }
   }
-  const droppedPath = decodeDroppedPath(
-    electronPath
-      || droppedFile?.path
-      || transfer?.getData('text/uri-list')
-      || transfer?.getData('text/plain')
-      || '',
-  )
+  const transferredText = transfer?.getData('text/uri-list') || transfer?.getData('text/plain') || ''
+  droppedPaths.push(...transferredText.split(/\r?\n/).map(decodeDroppedPath).filter(Boolean))
 
-  if (!droppedPath) {
+  if (!droppedPaths.length) {
     errorMessage.value = '浏览器未提供该文件夹的完整路径，请在路径框中粘贴后按 Enter'
     return
   }
 
-  await openProjectPaths([droppedPath])
+  const opened = await openProjectPaths(droppedPaths)
+  if (opened.length > 1) showToast(`已添加 ${opened.length} 个项目`)
+}
+
+function openAddProjectsDialog() {
+  batchProjectPaths.value = ''
+  addProjectsDialogOpen.value = true
+}
+
+function closeAddProjectsDialog() {
+  if (isSelecting.value) return
+  addProjectsDialogOpen.value = false
+  batchProjectPaths.value = ''
+}
+
+async function addPastedProjects() {
+  const paths = batchProjectPathList.value
+  if (!paths.length) return
+  closeAddProjectsDialog()
+  const opened = await openProjectPaths(paths)
+  showToast(`已添加 ${opened.length} 个项目`)
+}
+
+function appendBatchProjectPaths(paths: string[]) {
+  const seen = new Set<string>()
+  batchProjectPaths.value = [...batchProjectPathList.value, ...paths]
+    .map((path) => decodeDroppedPath(path))
+    .filter((path) => {
+      const normalized = normalizePath(path)
+      if (!normalized || seen.has(normalized)) return false
+      seen.add(normalized)
+      return true
+    })
+    .join('\n')
 }
 
 async function selectDirectory() {
@@ -589,7 +725,34 @@ async function selectDirectory() {
   try {
     if (window.launchlineDesktop) {
       const paths = await window.launchlineDesktop.selectDirectories(projectPath.value.trim())
-      await openProjectPaths(paths)
+      const opened = await openProjectPaths(paths)
+      if (opened.length > 1) showToast(`已添加 ${opened.length} 个项目`)
+      return opened.length
+    }
+    const response = await fetch('/api/select-directory', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: projectPath.value.trim() }),
+    })
+    const data = await response.json()
+    if (!response.ok) throw new Error(data.error || '无法打开目录选择器')
+    if (data.path) return (await openProjectPaths([data.path])).length
+    return 0
+  } catch (error) {
+    errorMessage.value = error instanceof Error ? error.message : '无法打开目录选择器'
+    return 0
+  } finally {
+    isSelecting.value = false
+  }
+}
+
+async function selectDirectoriesForBatch() {
+  if (isSelecting.value) return
+  isSelecting.value = true
+  errorMessage.value = ''
+  try {
+    if (window.launchlineDesktop) {
+      appendBatchProjectPaths(await window.launchlineDesktop.selectDirectories(projectPath.value.trim()))
       return
     }
     const response = await fetch('/api/select-directory', {
@@ -599,7 +762,7 @@ async function selectDirectory() {
     })
     const data = await response.json()
     if (!response.ok) throw new Error(data.error || '无法打开目录选择器')
-    if (data.path) await openProjectPaths([data.path])
+    if (data.path) appendBatchProjectPaths([data.path])
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : '无法打开目录选择器'
   } finally {
@@ -860,8 +1023,10 @@ async function persistProject(project: ProjectWorkspace, publishedAt = project.l
       await window.launchlineDesktop.saveProject(record)
     } else {
       const stored = JSON.parse(localStorage.getItem(browserSavedProjectKey) || '[]') as SavedProjectRecord[]
-      const next = [record, ...stored.filter((item) => normalizePath(item.path) !== normalizePath(record.path))]
-      localStorage.setItem(browserSavedProjectKey, JSON.stringify(next))
+      const existingIndex = stored.findIndex((item) => normalizePath(item.path) === normalizePath(record.path))
+      if (existingIndex === -1) stored.unshift(record)
+      else stored.splice(existingIndex, 1, record)
+      localStorage.setItem(browserSavedProjectKey, JSON.stringify(stored))
     }
     project.saved = true
     project.lastPublishedAt = record.lastPublishedAt
@@ -1060,16 +1225,28 @@ onBeforeUnmount(() => {
               active: project.id === activeProjectId,
               deploying: deployments.some((item) => item.status === 'running' && normalizePath(item.path) === normalizePath(project.repository?.root || project.path)),
               invalid: project.repository && !project.repository.isGitRepository,
+              dragging: project.id === draggedProjectId,
+              'drop-before': project.id === projectDropTargetId && projectDropPosition === 'before',
+              'drop-after': project.id === projectDropTargetId && projectDropPosition === 'after',
             }"
+            @dragover.prevent="handleProjectDragOver($event, project.id)"
+            @drop.prevent.stop="handleProjectDrop(project.id)"
           >
             <button
               class="project-tab-main"
               type="button"
               role="tab"
+              :draggable="!isBusy"
               :aria-selected="project.id === activeProjectId"
               :disabled="isBusy"
+              title="拖动调整项目顺序"
               @click="activateProject(project.id)"
+              @dragstart="handleProjectDragStart($event, project)"
+              @dragend="finishProjectDrag"
+              @keydown.alt.left.prevent="moveProjectByKeyboard(project.id, -1)"
+              @keydown.alt.right.prevent="moveProjectByKeyboard(project.id, 1)"
             >
+              <GripVertical class="project-tab-grip" :size="14" aria-hidden="true" />
               <span class="project-tab-state" aria-hidden="true"></span>
               <span class="project-tab-copy">
                 <strong>{{ projectTabName(project) }}</strong>
@@ -1092,13 +1269,12 @@ onBeforeUnmount(() => {
         <button
           class="add-project-button"
           type="button"
-          title="添加一个或多个项目"
+          title="批量添加项目"
           :disabled="isBusy"
-          @click="selectDirectory"
+          @click="openAddProjectsDialog"
         >
-          <LoaderCircle v-if="isSelecting" :size="16" class="spinning" />
-          <FolderPlus v-else :size="16" />
-          <span>添加项目</span>
+          <FolderPlus :size="16" />
+          <span>批量添加</span>
         </button>
       </nav>
 
@@ -1486,6 +1662,49 @@ onBeforeUnmount(() => {
         </button>
       </footer>
     </section>
+
+    <div v-if="addProjectsDialogOpen" class="add-project-dialog-backdrop" @click.self="closeAddProjectsDialog" @keydown.esc="closeAddProjectsDialog">
+      <section class="add-project-dialog" role="dialog" aria-modal="true" aria-labelledby="add-project-dialog-title">
+        <header class="add-project-dialog-header">
+          <div>
+            <span><FolderPlus :size="18" /></span>
+            <div>
+              <small>PROJECT QUEUE</small>
+              <h2 id="add-project-dialog-title">批量添加项目</h2>
+            </div>
+          </div>
+          <button type="button" title="关闭" aria-label="关闭批量添加" :disabled="isSelecting" @click="closeAddProjectsDialog">
+            <X :size="17" />
+          </button>
+        </header>
+        <div class="add-project-dialog-body">
+          <button class="multi-directory-button" type="button" :disabled="isSelecting" @click="selectDirectoriesForBatch">
+            <LoaderCircle v-if="isSelecting" :size="17" class="spinning" />
+            <FolderPlus v-else :size="17" />
+            {{ isDesktop ? '选择多个目录' : '选择目录（可连续添加）' }}
+          </button>
+          <div class="batch-divider"><span>或粘贴路径</span></div>
+          <label class="batch-path-field">
+            <span>项目路径 <small>{{ batchProjectPathList.length }} 个</small></span>
+            <textarea
+              v-model="batchProjectPaths"
+              autofocus
+              rows="7"
+              spellcheck="false"
+              placeholder="C:\project\app-one&#10;C:\project\app-two"
+              @keydown.ctrl.enter.prevent="addPastedProjects"
+              @keydown.meta.enter.prevent="addPastedProjects"
+            ></textarea>
+          </label>
+        </div>
+        <footer class="add-project-dialog-actions">
+          <button class="dialog-secondary" type="button" :disabled="isSelecting" @click="closeAddProjectsDialog">取消</button>
+          <button class="dialog-primary" type="button" :disabled="!batchProjectPathList.length || isSelecting" @click="addPastedProjects">
+            <Plus :size="16" />{{ batchProjectPathList.length ? `添加 ${batchProjectPathList.length} 个项目` : '添加项目' }}
+          </button>
+        </footer>
+      </section>
+    </div>
 
     <div v-if="deployDialogOpen" class="deploy-dialog-backdrop">
       <section class="deploy-dialog" :class="{ 'deployment-run-dialog': deployment }" role="dialog" aria-modal="true" aria-labelledby="deploy-dialog-title">

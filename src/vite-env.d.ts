@@ -6,6 +6,7 @@ interface LaunchlineDesktopBridge {
   selectDirectories(initialPath: string): Promise<string[]>
   getSavedProjects(): Promise<{ projects: SavedProjectRecord[]; removed: SavedProjectRecord[] }>
   saveProject(project: SavedProjectRecord): Promise<SavedProjectRecord>
+  reorderSavedProjects(paths: string[]): Promise<void>
   getPathForFile(file: File): string
   onOpenPath(callback: (path: string) => void): () => void
   restoreMainWindow(): void

@@ -138,8 +138,13 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, a:focus-visib
 .project-tab.active::after { background: var(--green); }
 .project-tab.deploying::after { background: var(--blue); }
 .project-tab.invalid::after { background: var(--orange); }
-.project-tab-main { min-width: 0; padding: 7px 4px 8px 10px; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 8px; border: 0; background: transparent; color: var(--ink); cursor: pointer; text-align: left; }
+.project-tab.dragging { opacity: 0.48; }
+.project-tab.drop-before { box-shadow: inset 3px 0 0 var(--blue); }
+.project-tab.drop-after { box-shadow: inset -3px 0 0 var(--blue); }
+.project-tab-main { min-width: 0; padding: 7px 4px 8px 8px; display: grid; grid-template-columns: auto auto minmax(0, 1fr) auto; align-items: center; gap: 7px; border: 0; background: transparent; color: var(--ink); cursor: pointer; text-align: left; }
 .project-tab-main:hover:not(:disabled) { background: rgba(255, 255, 255, 0.55); }
+.project-tab-grip { color: #8e9790; cursor: grab; }
+.project-tab-main:active .project-tab-grip { cursor: grabbing; }
 .project-tab-state { width: 7px; height: 7px; border-radius: 50%; background: #9ba29c; }
 .project-tab.active .project-tab-state { background: var(--green); box-shadow: 0 0 0 3px var(--green-soft); }
 .project-tab.deploying .project-tab-state { background: var(--blue); box-shadow: 0 0 0 3px #e5f0f4; }
@@ -148,11 +153,34 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, a:focus-visib
 .project-tab-copy strong, .project-tab-copy small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .project-tab-copy strong { font-size: 11px; }
 .project-tab-copy small { color: var(--muted); font: 400 8px 'DM Mono', 'Microsoft YaHei', monospace; }
-.project-tab-main > svg { color: #8e9790; }
+.project-tab-main > svg:not(.project-tab-grip) { color: #8e9790; }
 .project-tab-close { width: 32px; padding: 0; display: grid; place-items: center; border: 0; background: transparent; color: #8e958f; cursor: pointer; }
 .project-tab-close:hover:not(:disabled) { background: var(--orange-soft); color: var(--orange); }
 .add-project-button { flex: 0 0 auto; min-width: 112px; padding: 0 13px; display: flex; align-items: center; justify-content: center; gap: 7px; border: 0; border-left: 1px solid #c8cec8; background: var(--graphite); color: white; cursor: pointer; font-size: 10px; font-weight: 600; }
 .add-project-button:hover:not(:disabled) { background: #252b27; }
+
+.add-project-dialog-backdrop { position: fixed; inset: 0; z-index: 26; padding: 20px; display: grid; place-items: center; background: rgba(24, 29, 26, 0.52); backdrop-filter: blur(3px); }
+.add-project-dialog { width: min(620px, 100%); overflow: hidden; border: 1px solid #bfc6c0; border-radius: 6px; background: var(--paper); box-shadow: 0 22px 70px rgba(24, 29, 26, 0.24); }
+.add-project-dialog-header { min-height: 68px; padding: 12px 14px 12px 18px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--line); }
+.add-project-dialog-header > div { min-width: 0; display: flex; align-items: center; gap: 11px; }
+.add-project-dialog-header > div > span { width: 34px; height: 34px; display: grid; place-items: center; border-radius: 5px; background: var(--green-soft); color: var(--green); }
+.add-project-dialog-header small { display: block; margin-bottom: 2px; color: var(--blue); font: 500 8px 'DM Mono', monospace; }
+.add-project-dialog-header h2 { margin: 0; font-size: 16px; line-height: 1.2; }
+.add-project-dialog-header > button { width: 34px; height: 34px; display: grid; place-items: center; border: 0; border-radius: 4px; background: transparent; color: var(--muted); cursor: pointer; }
+.add-project-dialog-header > button:hover:not(:disabled) { background: var(--soft); color: var(--ink); }
+.add-project-dialog-body { padding: 18px; }
+.multi-directory-button { width: 100%; min-height: 46px; display: flex; align-items: center; justify-content: center; gap: 8px; border: 1px solid var(--graphite); border-radius: 5px; background: var(--graphite); color: white; cursor: pointer; font-size: 11px; font-weight: 600; }
+.multi-directory-button:hover:not(:disabled) { background: #252b27; }
+.batch-divider { height: 34px; display: flex; align-items: center; gap: 10px; color: #8b938d; font-size: 9px; }
+.batch-divider::before, .batch-divider::after { content: ''; height: 1px; flex: 1; background: var(--line); }
+.batch-path-field { display: flex; flex-direction: column; gap: 7px; }
+.batch-path-field > span { display: flex; align-items: center; justify-content: space-between; color: var(--graphite); font-size: 11px; font-weight: 600; }
+.batch-path-field small { color: var(--muted); font: 400 9px 'DM Mono', monospace; }
+.batch-path-field textarea { width: 100%; min-height: 148px; resize: vertical; padding: 11px 12px; border: 1px solid #c7cdc8; border-radius: 5px; outline: 0; background: #fafbf8; color: var(--ink); font: 400 11px/1.65 'DM Mono', 'Microsoft YaHei', monospace; }
+.batch-path-field textarea:focus { border-color: var(--blue); box-shadow: 0 0 0 2px rgba(62, 126, 151, 0.12); }
+.add-project-dialog-actions { min-height: 62px; padding: 10px 14px; display: flex; align-items: center; justify-content: flex-end; gap: 9px; border-top: 1px solid var(--line); background: #f6f7f4; }
+.add-project-dialog-actions button { min-height: 40px; padding: 0 15px; border-radius: 5px; cursor: pointer; font-size: 11px; font-weight: 600; }
+.add-project-dialog button:disabled { cursor: not-allowed; opacity: 0.5; }
 
 .persistent-warning {
   margin-bottom: 16px;
@@ -598,6 +626,10 @@ button:disabled { cursor: not-allowed; opacity: 0.45; }
   .project-tab { min-width: 156px; }
   .add-project-button { min-width: 48px; padding: 0 14px; }
   .add-project-button span { display: none; }
+  .add-project-dialog-backdrop { padding: 12px; }
+  .add-project-dialog-body { padding: 14px; }
+  .add-project-dialog-actions { align-items: stretch; flex-direction: column-reverse; }
+  .add-project-dialog-actions button { width: 100%; }
   .release-track strong { font-size: 10px; }
   .release-track li { gap: 7px; }
   .release-track small { display: none; }
