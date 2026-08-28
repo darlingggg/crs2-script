@@ -222,6 +222,41 @@ app.post('/api/repository/switch-branch', async (request, response) => {
   }
 })
 
+app.post('/api/repository/create-branch', async (request, response) => {
+  const path = request.body?.path
+  const branch = typeof request.body?.branch === 'string' ? request.body.branch.trim() : ''
+  if (!validDirectory(path)) return response.status(400).json({ error: '项目目录无效' })
+  if (!branch) return response.status(400).json({ error: '请输入需要创建的开发分支名称' })
+
+  const before = await inspectRepository(path)
+  if (!before.isGitRepository || !before.root) {
+    return response.status(400).json({ error: '该目录未被 Git 管理' })
+  }
+  if (!before.isClean) {
+    return response.status(409).json({ error: '工作区存在未提交改动，请先处理后再创建分支' })
+  }
+  if (before.localBranches?.includes(branch)) {
+    return response.status(409).json({ error: `本地分支已存在：${branch}` })
+  }
+
+  try {
+    await git(before.root, ['check-ref-format', '--branch', branch])
+    const { stdout, stderr } = await execFileAsync('git', ['-C', before.root, 'switch', '-c', branch], {
+      encoding: 'utf8',
+      windowsHide: true,
+      maxBuffer: 2 * 1024 * 1024,
+    })
+    response.json({
+      ok: true,
+      output: [stdout, stderr].filter(Boolean).join('\n').trim() || `已创建并切换到 ${branch} 分支`,
+      repository: await inspectRepository(before.root),
+    })
+  } catch (error) {
+    const failure = error as { stderr?: string; message?: string }
+    response.status(409).json({ error: failure.stderr?.trim() || failure.message || '开发分支创建失败' })
+  }
+})
+
 app.post('/api/select-directory', async (request, response) => {
   const initialPath = typeof request.body?.path === 'string' ? request.body.path.trim() : ''
   if (process.platform === 'darwin') {

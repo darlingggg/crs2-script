@@ -14,18 +14,22 @@ import {
   FileJson,
   FolderInput,
   FolderGit2,
+  FolderPlus,
   GitBranch,
   GitCommitHorizontal,
   GitPullRequestArrow,
   Github,
+  History,
   LoaderCircle,
   Layers3,
   Minimize2,
   PackageCheck,
   Play,
+  Plus,
   RefreshCw,
   Rocket,
   Send,
+  Settings2,
   ShieldAlert,
   TerminalSquare,
   UserRoundCheck,
@@ -120,22 +124,79 @@ type OwnerAccess = {
   reviewerRequired: boolean
 }
 
-const projectPath = ref('')
-const repository = ref<Repository | null>(null)
-const isInspecting = ref(false)
+type ProjectWorkspace = {
+  id: string
+  path: string
+  repository: Repository | null
+  isInspecting: boolean
+  isSwitchingBranch: boolean
+  isUpdatingSubmodules: boolean
+  isSyncingPackageOwner: boolean
+  isExecutingCommand: boolean
+  updateBeforeDeploy: boolean
+  syncPackageOwnerBeforeDeploy: boolean
+  commandOutput: string
+  terminalCommand: string
+  terminalEntries: TerminalEntry[]
+  terminalHistory: string[]
+  historyIndex: number
+  errorMessage: string
+  developmentBranch: string
+  developmentBranchDraft: string
+  branchSetupOpen: boolean
+  saved: boolean
+  lastPublishedAt?: string
+}
+
+let projectSequence = 0
+function createProjectWorkspace(path = '', savedProject?: SavedProjectRecord): ProjectWorkspace {
+  projectSequence += 1
+  const developmentBranch = savedProject?.developmentBranch || 'dev'
+  return {
+    id: `project-${Date.now()}-${projectSequence}`,
+    path,
+    repository: null,
+    isInspecting: false,
+    isSwitchingBranch: false,
+    isUpdatingSubmodules: false,
+    isSyncingPackageOwner: false,
+    isExecutingCommand: false,
+    updateBeforeDeploy: true,
+    syncPackageOwnerBeforeDeploy: false,
+    commandOutput: '',
+    terminalCommand: '',
+    terminalEntries: [],
+    terminalHistory: [],
+    historyIndex: -1,
+    errorMessage: '',
+    developmentBranch,
+    developmentBranchDraft: developmentBranch,
+    branchSetupOpen: false,
+    saved: Boolean(savedProject),
+    lastPublishedAt: savedProject?.lastPublishedAt,
+  }
+}
+
+const projectTabs = ref<ProjectWorkspace[]>([createProjectWorkspace()])
+const activeProjectId = ref(projectTabs.value[0].id)
+const activeProject = computed(() => projectTabs.value.find((item) => item.id === activeProjectId.value) || projectTabs.value[0])
+const projectPath = computed({ get: () => activeProject.value.path, set: (value: string) => (activeProject.value.path = value) })
+const repository = computed({ get: () => activeProject.value.repository, set: (value: Repository | null) => (activeProject.value.repository = value) })
+const isInspecting = computed({ get: () => activeProject.value.isInspecting, set: (value: boolean) => (activeProject.value.isInspecting = value) })
+const isSwitchingBranch = computed({ get: () => activeProject.value.isSwitchingBranch, set: (value: boolean) => (activeProject.value.isSwitchingBranch = value) })
+const isUpdatingSubmodules = computed({ get: () => activeProject.value.isUpdatingSubmodules, set: (value: boolean) => (activeProject.value.isUpdatingSubmodules = value) })
+const isSyncingPackageOwner = computed({ get: () => activeProject.value.isSyncingPackageOwner, set: (value: boolean) => (activeProject.value.isSyncingPackageOwner = value) })
+const isExecutingCommand = computed({ get: () => activeProject.value.isExecutingCommand, set: (value: boolean) => (activeProject.value.isExecutingCommand = value) })
+const updateBeforeDeploy = computed({ get: () => activeProject.value.updateBeforeDeploy, set: (value: boolean) => (activeProject.value.updateBeforeDeploy = value) })
+const syncPackageOwnerBeforeDeploy = computed({ get: () => activeProject.value.syncPackageOwnerBeforeDeploy, set: (value: boolean) => (activeProject.value.syncPackageOwnerBeforeDeploy = value) })
+const commandOutput = computed({ get: () => activeProject.value.commandOutput, set: (value: string) => (activeProject.value.commandOutput = value) })
+const terminalCommand = computed({ get: () => activeProject.value.terminalCommand, set: (value: string) => (activeProject.value.terminalCommand = value) })
+const terminalEntries = computed({ get: () => activeProject.value.terminalEntries, set: (value: TerminalEntry[]) => (activeProject.value.terminalEntries = value) })
+const terminalHistory = computed({ get: () => activeProject.value.terminalHistory, set: (value: string[]) => (activeProject.value.terminalHistory = value) })
+const historyIndex = computed({ get: () => activeProject.value.historyIndex, set: (value: number) => (activeProject.value.historyIndex = value) })
+const errorMessage = computed({ get: () => activeProject.value.errorMessage, set: (value: string) => (activeProject.value.errorMessage = value) })
 const isSelecting = ref(false)
-const isSwitchingBranch = ref(false)
 const isDraggingDirectory = ref(false)
-const isUpdatingSubmodules = ref(false)
-const isSyncingPackageOwner = ref(false)
-const isExecutingCommand = ref(false)
-const updateBeforeDeploy = ref(true)
-const syncPackageOwnerBeforeDeploy = ref(false)
-const commandOutput = ref('')
-const terminalCommand = ref('')
-const terminalEntries = ref<TerminalEntry[]>([])
-const terminalHistory = ref<string[]>([])
-const historyIndex = ref(-1)
 const terminalOutput = ref<HTMLElement | null>(null)
 const deploymentLogOutput = ref<HTMLElement | null>(null)
 const deploymentLogPinned = ref(true)
@@ -149,7 +210,6 @@ const deploymentError = ref('')
 const deploymentConfig = ref<DeploymentConfigSummary | null>(null)
 const deploymentOwnerAccess = ref<OwnerAccess | null>(null)
 const deploymentForm = ref({ commitMessage: '', mergeTitle: '', mergeDescription: '', useCrsAiTitle: true, reviewerName: '' })
-const errorMessage = ref('')
 const toast = ref('')
 const updateState = ref<DesktopUpdateState>({ phase: 'idle', currentVersion: appVersion })
 const updateDialogOpen = ref(false)
@@ -207,6 +267,10 @@ const repositoryName = computed(() => {
   if (!repository.value?.root) return '等待选择项目'
   return repository.value.root.split(/[\\/]/).filter(Boolean).at(-1) || repository.value.root
 })
+const developmentBranchAvailable = computed(() => Boolean(
+  repository.value?.localBranches?.includes(activeProject.value.developmentBranch),
+))
+const isOnDevelopmentBranch = computed(() => repository.value?.branch === activeProject.value.developmentBranch)
 const checkedTime = computed(() => {
   if (!repository.value?.checkedAt) return '尚未检查'
   return new Intl.DateTimeFormat('zh-CN', {
@@ -261,30 +325,96 @@ watch(() => updateState.value.phase, (phase) => {
   if (['available', 'downloaded', 'error'].includes(phase)) updateDialogOpen.value = true
 })
 
-async function inspect(path = projectPath.value) {
+function normalizePath(path: string) {
+  return path.trim().replace(/[\\/]+$/, '').toLowerCase()
+}
+
+function projectTabName(project: ProjectWorkspace) {
+  const root = project.repository?.root || project.path
+  return root.split(/[\\/]/).filter(Boolean).at(-1) || '新项目'
+}
+
+function activateProject(id: string) {
+  if (isBusy.value || id === activeProjectId.value) return
+  activeProjectId.value = id
+  directoryDragDepth = 0
+  isDraggingDirectory.value = false
+}
+
+function closeProjectTab(id: string) {
+  const index = projectTabs.value.findIndex((item) => item.id === id)
+  const project = projectTabs.value[index]
+  if (
+    index === -1
+    || project?.isInspecting
+    || project?.isSwitchingBranch
+    || project?.isUpdatingSubmodules
+    || project?.isSyncingPackageOwner
+    || project?.isExecutingCommand
+  ) return
+  projectTabs.value.splice(index, 1)
+  if (!projectTabs.value.length) projectTabs.value.push(createProjectWorkspace())
+  if (activeProjectId.value === id) {
+    activeProjectId.value = projectTabs.value[Math.min(index, projectTabs.value.length - 1)]!.id
+  }
+}
+
+function clearWorkspaceTerminal(project: ProjectWorkspace) {
+  project.terminalEntries = []
+  project.terminalHistory = []
+  project.historyIndex = -1
+  project.terminalCommand = ''
+}
+
+async function inspectWorkspace(project: ProjectWorkspace, path = project.path) {
   if (!path.trim()) {
-    repository.value = null
-    errorMessage.value = '请输入或选择一个项目目录'
+    project.repository = null
+    project.errorMessage = '请输入或选择一个项目目录'
     return
   }
 
-  isInspecting.value = true
-  errorMessage.value = ''
-  commandOutput.value = ''
+  project.isInspecting = true
+  project.errorMessage = ''
+  project.commandOutput = ''
   try {
-    const previousRoot = repository.value?.root
+    const previousRoot = project.repository?.root
     const response = await fetch(`/api/repository?path=${encodeURIComponent(path.trim())}`)
     const data = await response.json()
     if (!response.ok) throw new Error(data.error || '无法读取项目状态')
-    if (previousRoot && previousRoot !== data.root) clearTerminal()
-    projectPath.value = data.root || path.trim()
-    repository.value = data
+    if (previousRoot && previousRoot !== data.root) clearWorkspaceTerminal(project)
+    project.path = data.root || path.trim()
+    project.repository = data
   } catch (error) {
-    repository.value = null
-    errorMessage.value = error instanceof Error ? error.message : '无法读取项目状态'
+    project.repository = null
+    project.errorMessage = error instanceof Error ? error.message : '无法读取项目状态'
   } finally {
-    isInspecting.value = false
+    project.isInspecting = false
   }
+}
+
+async function inspect(path = projectPath.value) {
+  await inspectWorkspace(activeProject.value, path)
+}
+
+async function openProjectPaths(paths: string[], records: SavedProjectRecord[] = [], activate = true) {
+  const uniquePaths = [...new Set(paths.map((item) => item.trim()).filter(Boolean))]
+  if (!uniquePaths.length) return
+  const recordByPath = new Map(records.map((item) => [normalizePath(item.path), item]))
+  const blank = projectTabs.value.length === 1 && !projectTabs.value[0]?.path && !projectTabs.value[0]?.repository
+  if (blank) projectTabs.value = []
+
+  const opened: ProjectWorkspace[] = []
+  for (const path of uniquePaths) {
+    const normalized = normalizePath(path)
+    let project = projectTabs.value.find((item) => normalizePath(item.repository?.root || item.path) === normalized)
+    if (!project) {
+      project = createProjectWorkspace(path, recordByPath.get(normalized))
+      projectTabs.value.push(project)
+    }
+    opened.push(project)
+  }
+  if (activate || blank) activeProjectId.value = opened[0]!.id
+  await Promise.all(opened.map((project) => inspectWorkspace(project)))
 }
 
 function handlePathInput() {
@@ -297,26 +427,24 @@ function handlePathInput() {
   errorMessage.value = ''
 }
 
-async function switchBranch(event: Event) {
-  const select = event.currentTarget as HTMLSelectElement
-  const branch = select.value
-  const currentBranch = repository.value?.branch || ''
-  if (!hasRepository.value || !branch || branch === currentBranch || isSwitchingBranch.value) return
+async function switchToBranch(branch: string, project = activeProject.value) {
+  const currentBranch = project.repository?.branch || ''
+  if (!project.repository?.isGitRepository || !branch || branch === currentBranch || project.isSwitchingBranch) return
 
-  isSwitchingBranch.value = true
-  errorMessage.value = ''
+  project.isSwitchingBranch = true
+  project.errorMessage = ''
   const startedAt = Date.now()
   try {
     const response = await fetch('/api/repository/switch-branch', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ path: repository.value?.root || projectPath.value, branch }),
+      body: JSON.stringify({ path: project.repository?.root || project.path, branch }),
     })
     const data = await response.json()
     if (!response.ok) throw new Error(data.error || '分支切换失败')
 
-    if (data.repository) repository.value = data.repository
-    terminalEntries.value.push({
+    if (data.repository) project.repository = data.repository
+    project.terminalEntries.push({
       id: Date.now(),
       command: `git switch ${branch}`,
       output: data.output || `已切换到 ${branch} 分支`,
@@ -325,10 +453,72 @@ async function switchBranch(event: Event) {
     })
     showToast(`已切换到 ${branch} 分支`)
   } catch (error) {
-    errorMessage.value = error instanceof Error ? error.message : '分支切换失败'
-    select.value = currentBranch
+    project.errorMessage = error instanceof Error ? error.message : '分支切换失败'
   } finally {
-    isSwitchingBranch.value = false
+    project.isSwitchingBranch = false
+  }
+}
+
+async function switchBranch(event: Event) {
+  const select = event.currentTarget as HTMLSelectElement
+  const branch = select.value
+  const currentBranch = repository.value?.branch || ''
+  if (!hasRepository.value || !branch || branch === currentBranch || isSwitchingBranch.value) return
+  await switchToBranch(branch)
+  select.value = repository.value?.branch || currentBranch
+}
+
+async function switchToDevelopmentBranch() {
+  if (!developmentBranchAvailable.value) {
+    activeProject.value.branchSetupOpen = true
+    activeProject.value.developmentBranchDraft = activeProject.value.developmentBranch
+    showToast(`本地没有 ${activeProject.value.developmentBranch} 分支，请选择或创建开发分支`)
+    return
+  }
+  await switchToBranch(activeProject.value.developmentBranch)
+}
+
+async function saveDevelopmentBranch() {
+  const branch = activeProject.value.developmentBranchDraft.trim()
+  if (!branch || !repository.value?.localBranches?.includes(branch)) return
+  activeProject.value.developmentBranch = branch
+  activeProject.value.branchSetupOpen = false
+  if (activeProject.value.saved) await persistProject(activeProject.value)
+  if (repository.value.isClean && !projectIsDeploying.value) await switchToBranch(branch)
+  else showToast(`已将 ${branch} 设为开发分支`)
+}
+
+async function createDevelopmentBranch() {
+  const project = activeProject.value
+  const branch = project.developmentBranchDraft.trim()
+  if (!project.repository?.isGitRepository || !branch || project.isSwitchingBranch) return
+  project.isSwitchingBranch = true
+  project.errorMessage = ''
+  const startedAt = Date.now()
+  try {
+    const response = await fetch('/api/repository/create-branch', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: project.repository.root || project.path, branch }),
+    })
+    const data = await response.json()
+    if (!response.ok) throw new Error(data.error || '开发分支创建失败')
+    project.repository = data.repository
+    project.developmentBranch = branch
+    project.branchSetupOpen = false
+    project.terminalEntries.push({
+      id: Date.now(),
+      command: `git switch -c ${branch}`,
+      output: data.output || `已创建并切换到 ${branch} 分支`,
+      exitCode: 0,
+      durationMs: Date.now() - startedAt,
+    })
+    if (project.saved) await persistProject(project)
+    showToast(`已创建并设定开发分支 ${branch}`)
+  } catch (error) {
+    project.errorMessage = error instanceof Error ? error.message : '开发分支创建失败'
+  } finally {
+    project.isSwitchingBranch = false
   }
 }
 
@@ -385,9 +575,7 @@ async function handleDirectoryDrop(event: DragEvent) {
     return
   }
 
-  if (droppedPath !== projectPath.value) clearTerminal()
-  projectPath.value = droppedPath
-  await inspect(droppedPath)
+  await openProjectPaths([droppedPath])
 }
 
 async function selectDirectory() {
@@ -395,12 +583,8 @@ async function selectDirectory() {
   errorMessage.value = ''
   try {
     if (window.launchlineDesktop) {
-      const path = await window.launchlineDesktop.selectDirectory(projectPath.value.trim())
-      if (path) {
-        if (path !== projectPath.value) clearTerminal()
-        projectPath.value = path
-        await inspect(path)
-      }
+      const paths = await window.launchlineDesktop.selectDirectories(projectPath.value.trim())
+      await openProjectPaths(paths)
       return
     }
     const response = await fetch('/api/select-directory', {
@@ -410,11 +594,7 @@ async function selectDirectory() {
     })
     const data = await response.json()
     if (!response.ok) throw new Error(data.error || '无法打开目录选择器')
-    if (data.path) {
-      if (data.path !== projectPath.value) clearTerminal()
-      projectPath.value = data.path
-      await inspect(data.path)
-    }
+    if (data.path) await openProjectPaths([data.path])
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : '无法打开目录选择器'
   } finally {
@@ -423,10 +603,7 @@ async function selectDirectory() {
 }
 
 function clearTerminal() {
-  terminalEntries.value = []
-  terminalHistory.value = []
-  historyIndex.value = -1
-  terminalCommand.value = ''
+  clearWorkspaceTerminal(activeProject.value)
 }
 
 function navigateCommandHistory(direction: -1 | 1) {
@@ -644,12 +821,78 @@ async function pollDeployment(id: string) {
       const currentRoot = repository.value?.root?.replace(/[\\/]+$/, '').toLowerCase()
       if (data.repository && currentRoot === data.path.replace(/[\\/]+$/, '').toLowerCase()) repository.value = data.repository
       if (previous?.status === 'running') {
+        if (data.status === 'success') {
+          const project = projectTabs.value.find((item) => normalizePath(item.repository?.root || item.path) === normalizePath(data.path))
+          if (project) void persistProject(project, data.finishedAt || new Date().toISOString())
+        }
         showToast(`${deploymentProjectName(data)}：${data.status === 'success' ? '部署成功' : data.status === 'cancelled' ? '部署已取消' : '部署失败'}`)
       }
     }
   } catch (error) {
     stopDeploymentPolling(id)
     if (activeDeploymentId.value === id) deploymentError.value = error instanceof Error ? error.message : '无法读取部署状态'
+  }
+}
+
+const browserSavedProjectKey = 'launchline.saved-projects.v1'
+
+function savedProjectRecord(project: ProjectWorkspace, publishedAt = project.lastPublishedAt || new Date().toISOString()): SavedProjectRecord {
+  const path = project.repository?.root || project.path
+  return {
+    path,
+    name: projectTabName(project),
+    remote: project.repository?.remote && project.repository.remote !== '未配置 origin' ? project.repository.remote : undefined,
+    developmentBranch: project.developmentBranch || 'dev',
+    lastPublishedAt: publishedAt,
+  }
+}
+
+async function persistProject(project: ProjectWorkspace, publishedAt = project.lastPublishedAt || new Date().toISOString()) {
+  if (!project.repository?.isGitRepository) return
+  const record = savedProjectRecord(project, publishedAt)
+  try {
+    if (window.launchlineDesktop) {
+      await window.launchlineDesktop.saveProject(record)
+    } else {
+      const stored = JSON.parse(localStorage.getItem(browserSavedProjectKey) || '[]') as SavedProjectRecord[]
+      const next = [record, ...stored.filter((item) => normalizePath(item.path) !== normalizePath(record.path))]
+      localStorage.setItem(browserSavedProjectKey, JSON.stringify(next))
+    }
+    project.saved = true
+    project.lastPublishedAt = record.lastPublishedAt
+  } catch (error) {
+    showToast(error instanceof Error ? `项目记录保存失败：${error.message}` : '项目记录保存失败')
+  }
+}
+
+async function restoreSavedProjects() {
+  try {
+    let records: SavedProjectRecord[] = []
+    let removed: SavedProjectRecord[] = []
+    if (window.launchlineDesktop) {
+      const result = await window.launchlineDesktop.getSavedProjects()
+      records = result.projects
+      removed = result.removed
+    } else {
+      records = JSON.parse(localStorage.getItem(browserSavedProjectKey) || '[]') as SavedProjectRecord[]
+    }
+
+    if (records.length) await openProjectPaths(records.map((item) => item.path), records, false)
+    if (!window.launchlineDesktop && records.length) {
+      const unavailable = projectTabs.value.filter((item) => item.saved && item.repository?.error === '目录不存在或无法访问')
+      if (unavailable.length) {
+        const paths = new Set(unavailable.map((item) => normalizePath(item.path)))
+        localStorage.setItem(browserSavedProjectKey, JSON.stringify(records.filter((item) => !paths.has(normalizePath(item.path)))))
+        unavailable.forEach((item) => closeProjectTab(item.id))
+        removed = unavailable.map((item) => savedProjectRecord(item))
+      }
+    }
+    if (removed.length) {
+      const names = removed.slice(0, 2).map((item) => item.name).join('、')
+      showToast(`${names}${removed.length > 2 ? ` 等 ${removed.length} 个项目` : ''}的目录不存在，记录已删除`)
+    }
+  } catch {
+    // Saved projects are a convenience; a damaged history file must not block the workspace.
   }
 }
 
@@ -719,15 +962,14 @@ onMounted(() => {
   window.addEventListener('focus', handleFocus)
   document.documentElement.dataset.platform = desktopPlatform
   removeDesktopOpenPathListener = window.launchlineDesktop?.onOpenPath((path) => {
-    if (path !== projectPath.value) clearTerminal()
-    projectPath.value = path
-    void inspect(path)
+    void openProjectPaths([path])
   })
   const desktopBridge = window.launchlineDesktop
   if (desktopBridge) {
     removeUpdateStateListener = desktopBridge.onUpdateState((state) => (updateState.value = state))
     void desktopBridge.getUpdateState().then((state) => (updateState.value = state))
   }
+  void restoreSavedProjects()
   void restoreDeployments()
 })
 onBeforeUnmount(() => {
@@ -776,13 +1018,13 @@ onBeforeUnmount(() => {
       <div class="intro-row">
         <div>
           <p class="eyebrow">DEPLOY WORKSPACE</p>
-          <h1>准备一次可靠的部署</h1>
-          <p class="intro-copy">选择项目，确认分支与工作区状态，然后进入部署。</p>
+          <h1>部署工作台</h1>
+          <p class="intro-copy">管理项目、分支与发布任务。</p>
         </div>
         <div class="project-stamp" :class="{ active: hasRepository }">
           <FolderGit2 :size="20" />
           <div>
-            <span>当前项目</span>
+            <span>{{ projectTabs.length }} 个项目 · 当前项目</span>
             <strong>{{ repositoryName }}</strong>
           </div>
         </div>
@@ -803,11 +1045,63 @@ onBeforeUnmount(() => {
         </li>
       </ol>
 
+      <nav class="project-tabbar" aria-label="已打开的项目">
+        <div class="project-tabs" role="tablist">
+          <div
+            v-for="project in projectTabs"
+            :key="project.id"
+            class="project-tab"
+            :class="{
+              active: project.id === activeProjectId,
+              deploying: deployments.some((item) => item.status === 'running' && normalizePath(item.path) === normalizePath(project.repository?.root || project.path)),
+              invalid: project.repository && !project.repository.isGitRepository,
+            }"
+          >
+            <button
+              class="project-tab-main"
+              type="button"
+              role="tab"
+              :aria-selected="project.id === activeProjectId"
+              :disabled="isBusy"
+              @click="activateProject(project.id)"
+            >
+              <span class="project-tab-state" aria-hidden="true"></span>
+              <span class="project-tab-copy">
+                <strong>{{ projectTabName(project) }}</strong>
+                <small>{{ project.repository?.branch || (project.path ? '读取仓库…' : '选择项目目录') }}</small>
+              </span>
+              <History v-if="project.saved" :size="13" aria-label="已保存项目" />
+            </button>
+            <button
+              class="project-tab-close"
+              type="button"
+              title="关闭项目标签"
+              :aria-label="`关闭 ${projectTabName(project)}`"
+              :disabled="isBusy"
+              @click="closeProjectTab(project.id)"
+            >
+              <X :size="14" />
+            </button>
+          </div>
+        </div>
+        <button
+          class="add-project-button"
+          type="button"
+          title="添加一个或多个项目"
+          :disabled="isBusy"
+          @click="selectDirectory"
+        >
+          <LoaderCircle v-if="isSelecting" :size="16" class="spinning" />
+          <FolderPlus v-else :size="16" />
+          <span>添加项目</span>
+        </button>
+      </nav>
+
       <div v-if="repository?.isProtectedBranch" class="persistent-warning" role="alert">
         <ShieldAlert :size="21" />
         <div>
           <strong>当前位于 {{ repository.branch }} 分支</strong>
-          <span>主分支受保护。请先创建或切换到部署分支，随后刷新状态。</span>
+          <span>主分支受保护，请使用下方按钮切换到开发分支。</span>
         </div>
       </div>
 
@@ -886,6 +1180,74 @@ onBeforeUnmount(() => {
           </div>
 
           <div v-else-if="hasRepository" class="repo-details">
+            <section class="development-branch" :class="{ ready: developmentBranchAvailable, current: isOnDevelopmentBranch }">
+              <div class="development-branch-summary">
+                <span class="development-branch-icon"><GitBranch :size="17" /></span>
+                <div>
+                  <small>开发分支</small>
+                  <strong>{{ activeProject.developmentBranch }}</strong>
+                  <span v-if="isOnDevelopmentBranch">当前已在开发分支</span>
+                  <span v-else-if="developmentBranchAvailable">本地分支已就绪</span>
+                  <span v-else>本地尚未创建此分支</span>
+                </div>
+              </div>
+              <div class="development-branch-actions">
+                <button
+                  class="icon-button"
+                  type="button"
+                  title="配置开发分支"
+                  aria-label="配置开发分支"
+                  :disabled="isBusy || projectIsDeploying"
+                  @click="activeProject.branchSetupOpen = !activeProject.branchSetupOpen; activeProject.developmentBranchDraft = activeProject.developmentBranch"
+                >
+                  <Settings2 :size="16" />
+                </button>
+                <button
+                  class="development-switch-button"
+                  type="button"
+                  :disabled="isOnDevelopmentBranch || !repository?.isClean || isBusy || projectIsDeploying"
+                  :title="!repository?.isClean ? '工作区存在未提交改动，无法切换分支' : '切换到开发分支'"
+                  @click="switchToDevelopmentBranch"
+                >
+                  <LoaderCircle v-if="isSwitchingBranch" :size="15" class="spinning" />
+                  <GitBranch v-else :size="15" />
+                  {{ isOnDevelopmentBranch ? '已在开发分支' : `切换到 ${activeProject.developmentBranch}` }}
+                </button>
+              </div>
+              <div v-if="activeProject.branchSetupOpen" class="development-branch-setup">
+                <label>
+                  <span>选择本地分支</span>
+                  <select v-model="activeProject.developmentBranchDraft">
+                    <option value="" disabled>请选择分支</option>
+                    <option v-for="branch in repository?.localBranches" :key="branch" :value="branch">{{ branch }}</option>
+                  </select>
+                </label>
+                <button
+                  class="branch-secondary-button"
+                  type="button"
+                  :disabled="!repository?.localBranches?.includes(activeProject.developmentBranchDraft) || isSwitchingBranch"
+                  @click="saveDevelopmentBranch"
+                >
+                  {{ repository?.isClean && !projectIsDeploying ? '设定并切换' : '设为开发分支' }}
+                </button>
+                <span class="branch-setup-divider">或创建</span>
+                <label class="branch-create-field">
+                  <span>新开发分支</span>
+                  <input v-model="activeProject.developmentBranchDraft" type="text" spellcheck="false" placeholder="dev" />
+                </label>
+                <code>git switch -c {{ activeProject.developmentBranchDraft || 'dev' }}</code>
+                <button
+                  class="branch-create-button"
+                  type="button"
+                  :disabled="!repository?.isClean || !activeProject.developmentBranchDraft.trim() || repository?.localBranches?.includes(activeProject.developmentBranchDraft.trim()) || isSwitchingBranch"
+                  :title="!repository?.isClean ? '工作区存在未提交改动，无法创建分支' : '创建并选择开发分支'"
+                  @click="createDevelopmentBranch"
+                >
+                  <Plus :size="15" />创建并选择
+                </button>
+              </div>
+            </section>
+
             <dl class="repo-facts">
               <div>
                 <dt><GitBranch :size="15" />当前分支</dt>

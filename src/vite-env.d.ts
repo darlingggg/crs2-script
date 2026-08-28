@@ -3,7 +3,9 @@
 interface LaunchlineDesktopBridge {
   isElectron: true
   platform: 'win32' | 'darwin' | 'linux' | string
-  selectDirectory(initialPath: string): Promise<string | null>
+  selectDirectories(initialPath: string): Promise<string[]>
+  getSavedProjects(): Promise<{ projects: SavedProjectRecord[]; removed: SavedProjectRecord[] }>
+  saveProject(project: SavedProjectRecord): Promise<SavedProjectRecord>
   getPathForFile(file: File): string
   onOpenPath(callback: (path: string) => void): () => void
   restoreMainWindow(): void
@@ -15,6 +17,14 @@ interface LaunchlineDesktopBridge {
   installUpdate(): void
   onUpdateState(callback: (state: DesktopUpdateState) => void): () => void
   onDeploymentCount(callback: (count: number) => void): () => void
+}
+
+type SavedProjectRecord = {
+  path: string
+  name: string
+  remote?: string
+  developmentBranch: string
+  lastPublishedAt: string
 }
 
 type DesktopUpdateState = {

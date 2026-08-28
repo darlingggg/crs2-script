@@ -1,5 +1,6 @@
 import { execFileSync } from 'node:child_process'
 import { existsSync, statSync } from 'node:fs'
+import { readFile, writeFile } from 'node:fs/promises'
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
@@ -40,6 +41,13 @@ type DesktopUpdateState = {
   availableVersion?: string
   percent?: number
   message?: string
+}
+type SavedProject = {
+  path: string
+  name: string
+  remote?: string
+  developmentBranch: string
+  lastPublishedAt: string
 }
 let updateState: DesktopUpdateState = { phase: 'idle', currentVersion: electronApp.getVersion() }
 let checkForUpdates = async () => {}
@@ -87,6 +95,36 @@ function validDirectory(path: string) {
   } catch {
     return false
   }
+}
+
+function savedProjectsPath() {
+  return join(electronApp.getPath('userData'), 'saved-projects.json')
+}
+
+async function readSavedProjects(): Promise<SavedProject[]> {
+  try {
+    const contents = await readFile(savedProjectsPath(), 'utf8')
+    const value = JSON.parse(contents)
+    if (!Array.isArray(value)) return []
+    return value.filter((item): item is SavedProject => Boolean(
+      item
+      && typeof item.path === 'string'
+      && typeof item.name === 'string'
+      && typeof item.developmentBranch === 'string'
+      && typeof item.lastPublishedAt === 'string',
+    ))
+  } catch {
+    return []
+  }
+}
+
+async function writeSavedProjects(projects: SavedProject[]) {
+  await writeFile(savedProjectsPath(), `${JSON.stringify(projects, null, 2)}\n`, 'utf8')
+}
+
+function normalizedProjectPath(path: string) {
+  const normalized = resolve(path).replace(/[\\/]+$/, '')
+  return process.platform === 'win32' ? normalized.toLowerCase() : normalized
 }
 
 function runningDeploymentCount() {
@@ -327,16 +365,40 @@ function configureAutoUpdater() {
   updateTimer = setInterval(() => void checkForUpdates(), 4 * 60 * 60 * 1000)
 }
 
-ipcMain.handle('desktop:select-directory', async (_event, initialPath: string) => {
+ipcMain.handle('desktop:select-directories', async (_event, initialPath: string) => {
   const options: Electron.OpenDialogOptions = {
-    title: '选择需要部署的 Git 项目',
+    title: '选择一个或多个需要部署的 Git 项目',
     defaultPath: validDirectory(initialPath) ? initialPath : undefined,
-    properties: ['openDirectory'],
+    properties: ['openDirectory', 'multiSelections'],
   }
   const result = mainWindow
     ? await dialog.showOpenDialog(mainWindow, options)
     : await dialog.showOpenDialog(options)
-  return result.canceled ? null : result.filePaths[0] || null
+  return result.canceled ? [] : result.filePaths
+})
+ipcMain.handle('desktop:saved-projects:list', async () => {
+  const projects = await readSavedProjects()
+  const valid = projects.filter((project) => validDirectory(project.path))
+  const removed = projects.filter((project) => !validDirectory(project.path))
+  if (removed.length) await writeSavedProjects(valid)
+  return { projects: valid, removed }
+})
+ipcMain.handle('desktop:saved-projects:save', async (_event, project: SavedProject) => {
+  if (!validDirectory(project?.path)) throw new Error('项目目录不存在或无法访问')
+  const projects = await readSavedProjects()
+  const projectPath = normalizedProjectPath(project.path)
+  const nextProject = {
+    ...project,
+    path: resolve(project.path),
+    name: project.name || basename(project.path),
+    developmentBranch: project.developmentBranch || 'dev',
+  }
+  const nextProjects = [
+    nextProject,
+    ...projects.filter((item) => normalizedProjectPath(item.path) !== projectPath),
+  ]
+  await writeSavedProjects(nextProjects)
+  return nextProject
 })
 ipcMain.handle('desktop:get-update-state', () => updateState)
 ipcMain.on('desktop:check-for-updates', () => void checkForUpdates())
