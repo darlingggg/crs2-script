@@ -4,6 +4,7 @@ import packageMetadata from '../package.json'
 import {
   AlertTriangle,
   ArrowRight,
+  Braces,
   Check,
   CheckCircle2,
   ChevronRight,
@@ -29,6 +30,7 @@ import {
   Plus,
   RefreshCw,
   Rocket,
+  Save,
   Send,
   Settings2,
   ShieldAlert,
@@ -226,6 +228,12 @@ const deploymentForm = ref({ commitMessage: '', mergeTitle: '', mergeDescription
 const toast = ref('')
 const updateState = ref<DesktopUpdateState>({ phase: 'idle', currentVersion: appVersion })
 const updateDialogOpen = ref(false)
+const workflowConfigDialogOpen = ref(false)
+const workflowConfigText = ref('')
+const workflowConfigOriginal = ref('')
+const workflowConfigError = ref('')
+const isLoadingWorkflowConfig = ref(false)
+const isSavingWorkflowConfig = ref(false)
 let toastTimer: number | undefined
 const deploymentPollTimers = new Map<string, number>()
 let directoryDragDepth = 0
@@ -250,6 +258,7 @@ const terminalShellLabel = desktopPlatform === 'darwin'
 const updatePercent = computed(() => Math.round(updateState.value.percent || 0))
 const updateVisible = computed(() => desktopPlatform === 'win32' && updateState.value.phase !== 'idle')
 const updateDialogVisible = computed(() => updateDialogOpen.value && ['available', 'downloading', 'downloaded', 'error'].includes(updateState.value.phase))
+const workflowConfigDirty = computed(() => workflowConfigText.value !== workflowConfigOriginal.value)
 const currentProjectDeployment = computed(() => {
   const path = (repository.value?.root || projectPath.value).replace(/[\\/]+$/, '').toLowerCase()
   if (!path) return undefined
@@ -330,6 +339,82 @@ function showToast(message: string) {
   toast.value = message
   window.clearTimeout(toastTimer)
   toastTimer = window.setTimeout(() => (toast.value = ''), 3200)
+}
+
+function formatWorkflowConfig() {
+  try {
+    workflowConfigText.value = `${JSON.stringify(JSON.parse(workflowConfigText.value), null, 2)}\n`
+    workflowConfigError.value = ''
+  } catch (error) {
+    workflowConfigError.value = error instanceof Error ? `JSON 格式错误：${error.message}` : 'JSON 格式错误'
+  }
+}
+
+async function loadWorkflowConfig() {
+  isLoadingWorkflowConfig.value = true
+  workflowConfigError.value = ''
+  try {
+    const response = await fetch('/api/deployment/config')
+    const data = await response.json()
+    if (!response.ok) throw new Error(data.error || '无法读取流程配置')
+    const text = `${JSON.stringify(data.config, null, 2)}\n`
+    workflowConfigText.value = text
+    workflowConfigOriginal.value = text
+  } catch (error) {
+    workflowConfigError.value = error instanceof Error ? error.message : '无法读取流程配置'
+  } finally {
+    isLoadingWorkflowConfig.value = false
+  }
+}
+
+async function openWorkflowConfig() {
+  workflowConfigDialogOpen.value = true
+  document.body.style.overflow = 'hidden'
+  await loadWorkflowConfig()
+}
+
+function closeWorkflowConfig() {
+  if (isSavingWorkflowConfig.value) return
+  if (workflowConfigDirty.value && !window.confirm('流程配置尚未保存，确定放弃修改吗？')) return
+  workflowConfigDialogOpen.value = false
+  workflowConfigError.value = ''
+  document.body.style.overflow = ''
+}
+
+async function reloadWorkflowConfig() {
+  if (workflowConfigDirty.value && !window.confirm('确定放弃当前修改并重新载入吗？')) return
+  await loadWorkflowConfig()
+}
+
+async function saveWorkflowConfig() {
+  if (isSavingWorkflowConfig.value || isLoadingWorkflowConfig.value) return
+  workflowConfigError.value = ''
+  let config: unknown
+  try {
+    config = JSON.parse(workflowConfigText.value)
+  } catch (error) {
+    workflowConfigError.value = error instanceof Error ? `JSON 格式错误：${error.message}` : 'JSON 格式错误'
+    return
+  }
+
+  isSavingWorkflowConfig.value = true
+  try {
+    const response = await fetch('/api/deployment/config', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ config }),
+    })
+    const data = await response.json()
+    if (!response.ok) throw new Error(data.error || '无法保存流程配置')
+    const text = `${JSON.stringify(data.config, null, 2)}\n`
+    workflowConfigText.value = text
+    workflowConfigOriginal.value = text
+    showToast('流程配置已保存')
+  } catch (error) {
+    workflowConfigError.value = error instanceof Error ? error.message : '无法保存流程配置'
+  } finally {
+    isSavingWorkflowConfig.value = false
+  }
 }
 
 function handleDeploymentLogScroll() {
@@ -1182,6 +1267,10 @@ onBeforeUnmount(() => {
             <CircleAlert :size="13" />检查失败，重试
           </button>
         </div>
+        <button class="workflow-config-trigger" type="button" title="流程配置" @click="openWorkflowConfig">
+          <Settings2 :size="15" />
+          <span>流程配置</span>
+        </button>
         <span class="version">v{{ appVersion }}</span>
       </div>
     </header>
@@ -1889,6 +1978,64 @@ onBeforeUnmount(() => {
             <button class="dialog-danger" type="button" @click="cancelDeployment">取消部署</button>
           </template>
           <button v-else class="dialog-primary" type="button" @click="closeDeployDialog">关闭</button>
+        </footer>
+      </section>
+    </div>
+
+    <div v-if="workflowConfigDialogOpen" class="workflow-config-backdrop" @keydown.esc="closeWorkflowConfig">
+      <section class="workflow-config-dialog" role="dialog" aria-modal="true" aria-labelledby="workflow-config-title">
+        <header class="workflow-config-header">
+          <div class="workflow-config-title">
+            <span><Braces :size="19" /></span>
+            <div>
+              <small>DEPLOYMENT WORKFLOW</small>
+              <h2 id="workflow-config-title">流程配置</h2>
+            </div>
+          </div>
+          <button class="dialog-close" type="button" title="关闭" aria-label="关闭流程配置" :disabled="isSavingWorkflowConfig" @click="closeWorkflowConfig">
+            <X :size="18" />
+          </button>
+        </header>
+
+        <div class="workflow-config-toolbar">
+          <span><Braces :size="14" /><code>deploy.workflow.json</code></span>
+          <div>
+            <button type="button" :disabled="isLoadingWorkflowConfig || isSavingWorkflowConfig" @click="reloadWorkflowConfig">
+              <RefreshCw :size="14" :class="{ spinning: isLoadingWorkflowConfig }" />重新载入
+            </button>
+            <button type="button" :disabled="isLoadingWorkflowConfig || isSavingWorkflowConfig" @click="formatWorkflowConfig">
+              <Braces :size="14" />格式化
+            </button>
+          </div>
+        </div>
+
+        <div class="workflow-config-editor">
+          <div v-if="isLoadingWorkflowConfig" class="workflow-config-loading">
+            <LoaderCircle :size="20" class="spinning" />正在读取配置
+          </div>
+          <textarea
+            v-else
+            v-model="workflowConfigText"
+            aria-label="流程配置 JSON"
+            autocomplete="off"
+            spellcheck="false"
+            @keydown.ctrl.s.prevent="saveWorkflowConfig"
+            @keydown.meta.s.prevent="saveWorkflowConfig"
+          ></textarea>
+        </div>
+
+        <p v-if="workflowConfigError" class="workflow-config-error" role="alert">
+          <CircleAlert :size="15" />{{ workflowConfigError }}
+        </p>
+
+        <footer class="workflow-config-actions">
+          <span :class="{ dirty: workflowConfigDirty }">{{ workflowConfigDirty ? '有未保存修改' : '配置已同步' }}</span>
+          <button class="dialog-secondary" type="button" :disabled="isSavingWorkflowConfig" @click="closeWorkflowConfig">取消</button>
+          <button class="dialog-primary" type="button" :disabled="!workflowConfigDirty || isLoadingWorkflowConfig || isSavingWorkflowConfig" @click="saveWorkflowConfig">
+            <LoaderCircle v-if="isSavingWorkflowConfig" :size="15" class="spinning" />
+            <Save v-else :size="15" />
+            保存配置
+          </button>
         </footer>
       </section>
     </div>

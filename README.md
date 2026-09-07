@@ -49,6 +49,8 @@ Merge 标题默认接受 `crs2 em` 内置 AI 生成的默认值，无需填写�
 
 流程配置集中在 `deploy.workflow.json`，安装版对应应用 `resources` 目录中的同名文件。服务会在每次打开部署确认窗口和启动部署任务时重新读取，因此修改后无需重新构建或修改源码。
 
+应用顶部的“流程配置”可直接载入、编辑、格式化并保存完整 JSON。保存前会校验所有核心命令、交互回答和轮询字段，无效配置不会覆盖当前文件。
+
 - `directReleaseBranches`：允许跳过 Owner 检查、`crs2 em` 和合并同步，直接进入测试/生产发布的分支列表，默认包含 `master`
 - `commands.*`：命令、参数、超时和交互回答
 - `commands.merge.responses`：`crs2 em` 的问答顺序；`prompt` 是问题中稳定的一段文本，`value` 是自动输入内容，`optional` 可兼容不同 CLI 版本

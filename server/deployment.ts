@@ -1,6 +1,6 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
-import { readFile } from 'node:fs/promises'
+import { readFile, writeFile } from 'node:fs/promises'
 import { stripVTControlCharacters } from 'node:util'
 import type { Express, Request, Response } from 'express'
 import * as pty from 'node-pty'
@@ -197,15 +197,99 @@ function terminateChild(child: RunningProcess) {
   }
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
+}
+
+function requireText(value: unknown, path: string) {
+  if (typeof value !== 'string' || !value.trim()) {
+    throw new DeploymentFailure(`${path} 必须是非空字符串`)
+  }
+}
+
+function requireNumber(value: unknown, path: string, minimum: number) {
+  if (!Number.isFinite(value) || Number(value) < minimum) {
+    throw new DeploymentFailure(`${path} 必须是不小于 ${minimum} 的数字`)
+  }
+}
+
+export function validateWorkflowConfig(value: unknown): WorkflowConfig {
+  if (!isRecord(value)) throw new DeploymentFailure('配置根节点必须是 JSON 对象')
+  requireNumber(value.version, 'version', 1)
+  requireText(value.remote, 'remote')
+  requireText(value.targetBranch, 'targetBranch')
+  if (!Array.isArray(value.directReleaseBranches) || value.directReleaseBranches.some((branch) => typeof branch !== 'string' || !branch.trim())) {
+    throw new DeploymentFailure('directReleaseBranches 必须是分支名称数组')
+  }
+
+  if (!isRecord(value.defaults)) throw new DeploymentFailure('defaults 配置不完整')
+  requireText(value.defaults.commitMessage, 'defaults.commitMessage')
+  if (!isRecord(value.display)) throw new DeploymentFailure('display 配置不完整')
+  requireText(value.display.testEnvironment, 'display.testEnvironment')
+  requireText(value.display.testTask, 'display.testTask')
+  requireText(value.display.productionEnvironment, 'display.productionEnvironment')
+
+  for (const pollName of ['mergePoll', 'productionPoll'] as const) {
+    const poll = value[pollName]
+    if (!isRecord(poll)) throw new DeploymentFailure(`${pollName} 配置不完整`)
+    requireNumber(poll.intervalMs, `${pollName}.intervalMs`, 0)
+    requireNumber(poll.maxAttempts, `${pollName}.maxAttempts`, 1)
+  }
+  if (!isRecord(value.mergeRetry)) throw new DeploymentFailure('mergeRetry 配置不完整')
+  requireNumber(value.mergeRetry.intervalMs, 'mergeRetry.intervalMs', 0)
+  requireNumber(value.mergeRetry.maxAttempts, 'mergeRetry.maxAttempts', 1)
+  if (!Array.isArray(value.mergeRetry.retryOn) || value.mergeRetry.retryOn.some((message) => typeof message !== 'string')) {
+    throw new DeploymentFailure('mergeRetry.retryOn 必须是字符串数组')
+  }
+
+  if (!isRecord(value.commands)) throw new DeploymentFailure('commands 配置不完整')
+  const requiredCommands = [
+    'submodules',
+    'stage',
+    'commit',
+    'fetch',
+    'push',
+    'merge',
+    'switchTarget',
+    'switchTargetFromRemote',
+    'pullTarget',
+    'testRelease',
+    'productionRelease',
+  ]
+  for (const commandName of requiredCommands) {
+    const command = value.commands[commandName]
+    if (!isRecord(command)) throw new DeploymentFailure(`commands.${commandName} 配置不完整`)
+    requireText(command.label, `commands.${commandName}.label`)
+    requireText(command.program, `commands.${commandName}.program`)
+    if (!Array.isArray(command.args) || command.args.some((argument) => typeof argument !== 'string')) {
+      throw new DeploymentFailure(`commands.${commandName}.args 必须是字符串数组`)
+    }
+    requireNumber(command.timeoutMs, `commands.${commandName}.timeoutMs`, 1)
+    if (command.interactive !== undefined && typeof command.interactive !== 'boolean') {
+      throw new DeploymentFailure(`commands.${commandName}.interactive 必须是布尔值`)
+    }
+    if (command.responses !== undefined) {
+      if (!Array.isArray(command.responses)) throw new DeploymentFailure(`commands.${commandName}.responses 必须是数组`)
+      command.responses.forEach((item, index) => {
+        if (!isRecord(item) || typeof item.value !== 'string') {
+          throw new DeploymentFailure(`commands.${commandName}.responses[${index}].value 必须是字符串`)
+        }
+        requireNumber(item.delayMs, `commands.${commandName}.responses[${index}].delayMs`, 0)
+        if (item.prompt !== undefined && typeof item.prompt !== 'string') {
+          throw new DeploymentFailure(`commands.${commandName}.responses[${index}].prompt 必须是字符串`)
+        }
+        if (item.optional !== undefined && typeof item.optional !== 'boolean') {
+          throw new DeploymentFailure(`commands.${commandName}.responses[${index}].optional 必须是布尔值`)
+        }
+      })
+    }
+  }
+
+  return value as unknown as WorkflowConfig
+}
+
 async function loadConfig(configPath: string): Promise<WorkflowConfig> {
-  const config = JSON.parse(await readFile(configPath, 'utf8')) as WorkflowConfig
-  if (!config.remote || !config.targetBranch || !Array.isArray(config.directReleaseBranches) || !config.defaults?.commitMessage || !config.commands || !config.mergePoll || !config.mergeRetry || !config.productionPoll) {
-    throw new DeploymentFailure('deploy.workflow.json 配置不完整')
-  }
-  if (config.mergeRetry.maxAttempts < 1 || config.mergeRetry.intervalMs < 0 || !Array.isArray(config.mergeRetry.retryOn)) {
-    throw new DeploymentFailure('deploy.workflow.json 的 mergeRetry 配置无效')
-  }
-  return config
+  return validateWorkflowConfig(JSON.parse(await readFile(configPath, 'utf8')))
 }
 
 function isDirectReleaseBranch(branch: string, config: WorkflowConfig) {
@@ -681,6 +765,29 @@ function sendError(response: Response, status: number, error: string) {
 }
 
 export function registerDeploymentRoutes(app: Express, configPath: string, ownerMapPath: string, dependencies: Dependencies) {
+  app.get('/api/deployment/config', async (_request: Request, response: Response) => {
+    try {
+      response.json({ config: await loadConfig(configPath) })
+    } catch (error) {
+      sendError(response, 500, error instanceof Error ? error.message : '无法读取流程配置')
+    }
+  })
+
+  app.put('/api/deployment/config', async (request: Request, response: Response) => {
+    let config: WorkflowConfig
+    try {
+      config = validateWorkflowConfig(request.body?.config)
+    } catch (error) {
+      return sendError(response, 400, error instanceof Error ? error.message : '流程配置无效')
+    }
+    try {
+      await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`, 'utf8')
+      response.json({ config })
+    } catch (error) {
+      sendError(response, 500, error instanceof Error ? error.message : '无法保存流程配置')
+    }
+  })
+
   app.get('/api/deployments', (_request: Request, response: Response) => {
     response.json(getDeploymentsSnapshot())
   })

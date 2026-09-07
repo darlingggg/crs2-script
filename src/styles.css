@@ -86,6 +86,8 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, a:focus-visib
 .update-status button:hover { filter: brightness(0.97); }
 .update-progress { width: 64px; height: 4px; overflow: hidden; border-radius: 2px; background: #d9e4e6; }
 .update-progress i { display: block; height: 100%; border-radius: inherit; background: var(--blue); transition: width 180ms ease; }
+.workflow-config-trigger { height: 32px; display: flex; align-items: center; gap: 7px; padding: 0 10px; border: 1px solid #c5cbc6; border-radius: 4px; background: white; color: var(--graphite); cursor: pointer; font-size: 10px; font-weight: 600; }
+.workflow-config-trigger:hover { border-color: #98ada1; background: var(--green-soft); color: var(--green); }
 
 .workspace { max-width: 1180px; margin: 0 auto; padding: 24px 24px 48px; }
 
@@ -531,6 +533,30 @@ button:disabled { cursor: not-allowed; opacity: 0.45; }
 .dialog-danger { border: 1px solid #da8d69; background: white; color: #b24821; }
 .polling-note { margin-right: auto; color: var(--muted); font-size: 9px; }
 
+.workflow-config-backdrop { position: fixed; inset: 0; z-index: 32; padding: 24px; display: grid; place-items: center; background: rgba(24, 29, 26, 0.62); backdrop-filter: blur(4px); }
+.workflow-config-dialog { width: min(980px, 100%); height: min(820px, calc(100vh - 48px)); min-height: 560px; display: flex; flex-direction: column; overflow: hidden; border: 1px solid #bfc5bf; background: var(--paper); box-shadow: 0 24px 80px rgba(21, 26, 23, 0.3); }
+.workflow-config-header { min-height: 70px; padding: 13px 16px 13px 20px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--line); }
+.workflow-config-title { display: flex; align-items: center; gap: 12px; }
+.workflow-config-title > span { width: 36px; height: 36px; display: grid; place-items: center; border-radius: 5px; background: var(--graphite); color: #a8d9c3; }
+.workflow-config-title > div { display: flex; flex-direction: column; gap: 2px; }
+.workflow-config-title small { color: var(--blue); font: 500 8px 'DM Mono', monospace; }
+.workflow-config-title h2 { margin: 0; font: 600 18px 'Space Grotesk', 'Microsoft YaHei', sans-serif; letter-spacing: 0; }
+.workflow-config-toolbar { min-height: 52px; padding: 8px 16px 8px 20px; display: flex; align-items: center; justify-content: space-between; gap: 16px; border-bottom: 1px solid #3c4840; background: #292e2b; color: #cbd3cc; }
+.workflow-config-toolbar > span { min-width: 0; display: flex; align-items: center; gap: 8px; }
+.workflow-config-toolbar code { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 500 10px 'DM Mono', monospace; }
+.workflow-config-toolbar > div { display: flex; gap: 7px; }
+.workflow-config-toolbar button { height: 32px; display: flex; align-items: center; gap: 6px; padding: 0 9px; border: 1px solid #59645d; border-radius: 4px; background: #343a36; color: #e2e7e3; cursor: pointer; font-size: 9px; }
+.workflow-config-toolbar button:hover:not(:disabled) { border-color: #85a694; background: #3b4840; }
+.workflow-config-editor { position: relative; flex: 1; min-height: 0; background: #18201b; }
+.workflow-config-editor textarea { width: 100%; height: 100%; min-height: 0; display: block; resize: none; padding: 18px 20px; border: 0; outline: 0; tab-size: 2; background: transparent; color: #eef3ef; caret-color: #ffb486; font: 400 12px/1.65 'DM Mono', Consolas, 'Microsoft YaHei', monospace; white-space: pre; overflow: auto; }
+.workflow-config-editor textarea:focus { box-shadow: inset 0 0 0 2px rgba(83, 148, 119, 0.65); }
+.workflow-config-loading { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; gap: 9px; color: #bdc8c0; font-size: 11px; }
+.workflow-config-error { min-height: 40px; margin: 0; padding: 9px 20px; display: flex; align-items: center; gap: 7px; border-top: 1px solid #e0a58a; background: var(--orange-soft); color: #a74420; font-size: 10px; }
+.workflow-config-actions { min-height: 66px; padding: 11px 16px 11px 20px; display: flex; align-items: center; justify-content: flex-end; gap: 9px; border-top: 1px solid var(--line); background: #f6f7f4; }
+.workflow-config-actions > span { margin-right: auto; color: var(--muted); font: 500 9px 'DM Mono', 'Microsoft YaHei', monospace; }
+.workflow-config-actions > span.dirty { color: var(--orange); }
+.workflow-config-actions button { min-height: 40px; padding: 0 15px; border-radius: 5px; cursor: pointer; font-size: 11px; font-weight: 600; }
+
 .update-dialog-backdrop { position: fixed; inset: 0; z-index: 30; padding: 20px; display: grid; place-items: center; background: rgba(24, 29, 26, 0.56); backdrop-filter: blur(4px); }
 .update-dialog { width: min(520px, 100%); overflow: hidden; border: 1px solid #bfc5bf; border-radius: 6px; background: var(--paper); box-shadow: 0 24px 80px rgba(21, 26, 23, 0.3); }
 .update-dialog-header { min-height: 74px; padding: 14px 16px 14px 20px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--line); }
@@ -612,6 +638,8 @@ button:disabled { cursor: not-allowed; opacity: 0.45; }
   .topbar { padding: 0 16px; }
   .topbar-meta.updating .local-pill { display: none; }
   .topbar-meta { gap: 8px; }
+  .workflow-config-trigger { width: 32px; padding: 0; justify-content: center; }
+  .workflow-config-trigger span { display: none; }
   .version { padding-left: 8px; }
   .update-progress { width: 42px; }
   .update-dialog-backdrop { padding: 12px; }
@@ -630,6 +658,15 @@ button:disabled { cursor: not-allowed; opacity: 0.45; }
   .add-project-dialog-body { padding: 14px; }
   .add-project-dialog-actions { align-items: stretch; flex-direction: column-reverse; }
   .add-project-dialog-actions button { width: 100%; }
+  .workflow-config-backdrop { padding: 0; }
+  .workflow-config-dialog { width: 100%; height: 100%; min-height: 0; border: 0; }
+  .workflow-config-header { min-height: 64px; padding-left: 16px; }
+  .workflow-config-toolbar { min-height: 94px; padding: 10px 14px; align-items: stretch; flex-direction: column; }
+  .workflow-config-toolbar > div { display: grid; grid-template-columns: 1fr 1fr; }
+  .workflow-config-toolbar button { justify-content: center; }
+  .workflow-config-editor textarea { padding: 14px; font-size: 11px; }
+  .workflow-config-actions { padding: 10px 14px; flex-wrap: wrap; }
+  .workflow-config-actions > span { width: 100%; margin: 0; }
   .release-track strong { font-size: 10px; }
   .release-track li { gap: 7px; }
   .release-track small { display: none; }
