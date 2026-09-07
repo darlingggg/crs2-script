@@ -35,6 +35,7 @@ type WorkflowConfig = {
   version: number
   remote: string
   targetBranch: string
+  directReleaseBranches: string[]
   defaults: {
     commitMessage: string
   }
@@ -198,13 +199,17 @@ function terminateChild(child: RunningProcess) {
 
 async function loadConfig(configPath: string): Promise<WorkflowConfig> {
   const config = JSON.parse(await readFile(configPath, 'utf8')) as WorkflowConfig
-  if (!config.remote || !config.targetBranch || !config.defaults?.commitMessage || !config.commands || !config.mergePoll || !config.mergeRetry || !config.productionPoll) {
+  if (!config.remote || !config.targetBranch || !Array.isArray(config.directReleaseBranches) || !config.defaults?.commitMessage || !config.commands || !config.mergePoll || !config.mergeRetry || !config.productionPoll) {
     throw new DeploymentFailure('deploy.workflow.json 配置不完整')
   }
   if (config.mergeRetry.maxAttempts < 1 || config.mergeRetry.intervalMs < 0 || !Array.isArray(config.mergeRetry.retryOn)) {
     throw new DeploymentFailure('deploy.workflow.json 的 mergeRetry 配置无效')
   }
   return config
+}
+
+function isDirectReleaseBranch(branch: string, config: WorkflowConfig) {
+  return config.directReleaseBranches.includes(branch)
 }
 
 function delay(session: DeploymentSession, ms: number) {
@@ -432,7 +437,7 @@ async function commandResult(path: string, command: string) {
   })
 }
 
-function parseProjectOwners(output: string) {
+export function parseProjectOwners(output: string) {
   for (const line of output.split(/\r?\n/)) {
     if (!line.includes('|')) continue
     const cells = line.split('|').slice(1, -1).map((cell) => cell.trim())
@@ -441,6 +446,33 @@ function parseProjectOwners(output: string) {
     if (cells[0] && owners.length) return { projectName: cells[0], owners }
   }
   throw new DeploymentFailure('无法解析 crs2 show project --showOwner 的 Owner 信息')
+}
+
+export function resolveProjectOwners(rawOwners: string[], ownerMap: Record<string, unknown>) {
+  return rawOwners.map((rawName) => {
+    let displayName = rawName.trim()
+    let directGitUserName: string | undefined
+    const identity = displayName.match(/^([^()（）]+?)\s*[（(]([^()（）]+)[）)]$/)
+    if (identity) {
+      const left = identity[1].trim()
+      const right = identity[2].trim()
+      const gitUserPattern = /^[a-z0-9][a-z0-9._-]*$/i
+      if (gitUserPattern.test(left)) {
+        directGitUserName = left
+        displayName = right
+      } else if (gitUserPattern.test(right)) {
+        directGitUserName = right
+        displayName = left
+      }
+    }
+
+    const mappedName = ownerMap[displayName] ?? ownerMap[rawName]
+    const mappedGitUserName = typeof mappedName === 'string' && mappedName.trim()
+      ? mappedName.trim()
+      : undefined
+    const gitUserName = directGitUserName || mappedGitUserName
+    return { displayName, gitUserName, mapped: Boolean(gitUserName) }
+  })
 }
 
 async function inspectOwnerAccess(path: string, gitUserName: string, ownerMapPath: string): Promise<OwnerAccess> {
@@ -454,11 +486,7 @@ async function inspectOwnerAccess(path: string, gitUserName: string, ownerMapPat
 
   const parsed = parseProjectOwners(command.output)
   const ownerMap = JSON.parse(mapContents) as Record<string, unknown>
-  const owners = parsed.owners.map((displayName) => {
-    const mappedName = ownerMap[displayName]
-    const mapped = typeof mappedName === 'string' && Boolean(mappedName.trim())
-    return { displayName, gitUserName: mapped ? mappedName.trim() : undefined, mapped }
-  })
+  const owners = resolveProjectOwners(parsed.owners, ownerMap)
   const normalizedGitUser = gitUserName.trim().toLowerCase()
   const isCurrentUserOwner = Boolean(normalizedGitUser) && owners.some(
     (owner) => owner.gitUserName?.toLowerCase() === normalizedGitUser,
@@ -490,9 +518,10 @@ async function executeDeployment(
   input: DeploymentInput,
   config: WorkflowConfig,
   dependencies: Dependencies,
-  ownerAccess: OwnerAccess,
+  ownerAccess: OwnerAccess | null,
 ) {
-  const reviewerIndex = ownerAccess.isCurrentUserOwner
+  const directRelease = isDirectReleaseBranch(session.sourceBranch, config)
+  const reviewerIndex = !ownerAccess || ownerAccess.isCurrentUserOwner
     ? -1
     : ownerAccess.owners.findIndex((owner) => owner.displayName === input.reviewerName)
   const context: Record<string, string> = {
@@ -551,58 +580,64 @@ async function executeDeployment(
     await runRequiredCommand(session, 'push', config.commands.push, context)
     finishStep(session, 'push', `${session.sourceBranch} 已推送到 ${config.remote}`)
 
-    startStep(session, 'merge')
-    if (!ownerAccess.isCurrentUserOwner) {
-      const reviewer = ownerAccess.owners[reviewerIndex]
-      addLog(session, 'merge', `当前 Git 用户 ${ownerAccess.currentGitUser || '未配置'} 不是项目 Owner；已选择 ${reviewer.displayName} 作为审核人，请通知其进行合并分支`)
-    }
-    if (input.useCrsAiTitle) {
-      addLog(session, 'merge', 'crs2 AI 将生成 Merge 标题，生成内容会在命令输出中回显')
-    }
-    let mergeSucceeded = false
-    for (let attempt = 1; attempt <= config.mergeRetry.maxAttempts; attempt += 1) {
-      const step = getStep(session, 'merge')
-      step.detail = `第 ${attempt}/${config.mergeRetry.maxAttempts} 次尝试`
-      const mergeResult = await runCommand(session, 'merge', config.commands.merge, context)
-      if (mergeResult.exitCode === 0) {
-        mergeSucceeded = true
-        break
+    if (directRelease) {
+      skipStep(session, 'merge', `${session.sourceBranch} 已配置为直接发布分支`)
+      skipStep(session, 'merge_sync', '无需切换或等待合并')
+      addLog(session, 'merge', `当前分支 ${session.sourceBranch} 命中 directReleaseBranches，跳过合并流程`)
+    } else {
+      startStep(session, 'merge')
+      if (ownerAccess && !ownerAccess.isCurrentUserOwner) {
+        const reviewer = ownerAccess.owners[reviewerIndex]
+        addLog(session, 'merge', `当前 Git 用户 ${ownerAccess.currentGitUser || '未配置'} 不是项目 Owner；已选择 ${reviewer.displayName} 作为审核人，请通知其进行合并分支`)
       }
-
-      const retryable = config.mergeRetry.retryOn.some((message) => mergeResult.output.includes(message))
-      if (!retryable || attempt === config.mergeRetry.maxAttempts) {
-        throw new DeploymentFailure(mergeResult.output || `创建并合并代码失败，退出码 ${mergeResult.exitCode}`)
+      if (input.useCrsAiTitle) {
+        addLog(session, 'merge', 'crs2 AI 将生成 Merge 标题，生成内容会在命令输出中回显')
       }
-
-      const waitSeconds = Math.round(config.mergeRetry.intervalMs / 1000)
-      addLog(session, 'merge', `GitLab 分支状态尚未同步，${waitSeconds} 秒后进行第 ${attempt + 1} 次尝试`)
-      await delay(session, config.mergeRetry.intervalMs)
-    }
-    if (!mergeSucceeded) throw new DeploymentFailure('创建并合并代码失败')
-    finishStep(session, 'merge', input.useCrsAiTitle ? '合并请求已提交，标题由 crs2 AI 生成' : '合并请求已提交')
-
-    startStep(session, 'merge_sync')
-    const switchResult = await runCommand(session, 'merge_sync', config.commands.switchTarget, context)
-    if (switchResult.exitCode !== 0) {
-      await runRequiredCommand(session, 'merge_sync', config.commands.switchTargetFromRemote, context)
-    }
-
-    let merged = false
-    for (let attempt = 1; attempt <= config.mergePoll.maxAttempts; attempt += 1) {
-      const step = getStep(session, 'merge_sync')
-      step.detail = `第 ${attempt}/${config.mergePoll.maxAttempts} 次同步`
-      const pullResult = await runCommand(session, 'merge_sync', config.commands.pullTarget, context)
-      if (pullResult.exitCode === 0) {
-        const containsSource = await gitResult(session.path, ['merge-base', '--is-ancestor', context.sourceCommit, 'HEAD'])
-        if (containsSource.exitCode === 0) {
-          merged = true
+      let mergeSucceeded = false
+      for (let attempt = 1; attempt <= config.mergeRetry.maxAttempts; attempt += 1) {
+        const step = getStep(session, 'merge')
+        step.detail = `第 ${attempt}/${config.mergeRetry.maxAttempts} 次尝试`
+        const mergeResult = await runCommand(session, 'merge', config.commands.merge, context)
+        if (mergeResult.exitCode === 0) {
+          mergeSucceeded = true
           break
         }
+
+        const retryable = config.mergeRetry.retryOn.some((message) => mergeResult.output.includes(message))
+        if (!retryable || attempt === config.mergeRetry.maxAttempts) {
+          throw new DeploymentFailure(mergeResult.output || `创建并合并代码失败，退出码 ${mergeResult.exitCode}`)
+        }
+
+        const waitSeconds = Math.round(config.mergeRetry.intervalMs / 1000)
+        addLog(session, 'merge', `GitLab 分支状态尚未同步，${waitSeconds} 秒后进行第 ${attempt + 1} 次尝试`)
+        await delay(session, config.mergeRetry.intervalMs)
       }
-      if (attempt < config.mergePoll.maxAttempts) await delay(session, config.mergePoll.intervalMs)
+      if (!mergeSucceeded) throw new DeploymentFailure('创建并合并代码失败')
+      finishStep(session, 'merge', input.useCrsAiTitle ? '合并请求已提交，标题由 crs2 AI 生成' : '合并请求已提交')
+
+      startStep(session, 'merge_sync')
+      const switchResult = await runCommand(session, 'merge_sync', config.commands.switchTarget, context)
+      if (switchResult.exitCode !== 0) {
+        await runRequiredCommand(session, 'merge_sync', config.commands.switchTargetFromRemote, context)
+      }
+
+      let merged = false
+      for (let attempt = 1; attempt <= config.mergePoll.maxAttempts; attempt += 1) {
+        const step = getStep(session, 'merge_sync')
+        step.detail = `第 ${attempt}/${config.mergePoll.maxAttempts} 次同步`
+        const pullResult = await runCommand(session, 'merge_sync', config.commands.pullTarget, context)
+        if (pullResult.exitCode === 0) {
+          const containsSource = await gitResult(session.path, ['merge-base', '--is-ancestor', context.sourceCommit, 'HEAD'])
+          if (containsSource.exitCode === 0) {
+            merged = true
+            break
+          }
+        }
+        if (attempt < config.mergePoll.maxAttempts) await delay(session, config.mergePoll.intervalMs)
+      }
+      if (!merged) throw new DeploymentFailure(`等待 ${config.targetBranch} 同步合并内容超时`)
+      finishStep(session, 'merge_sync', `${config.targetBranch} 已包含 ${context.sourceCommit.slice(0, 8)}`)
     }
-    if (!merged) throw new DeploymentFailure(`等待 ${config.targetBranch} 同步合并内容超时`)
-    finishStep(session, 'merge_sync', `${config.targetBranch} 已包含 ${context.sourceCommit.slice(0, 8)}`)
 
     startStep(session, 'test_release')
     await runRequiredCommand(session, 'test_release', config.commands.testRelease, context)
@@ -659,16 +694,26 @@ export function registerDeploymentRoutes(app: Express, configPath: string, owner
 
     try {
       const config = await loadConfig(configPath)
-      const ownerAccess = await inspectOwnerAccess(repository.root, repository.gitUserName || '', ownerMapPath)
+      const directRelease = isDirectReleaseBranch(repository.branch, config)
+      if (repository.isProtectedBranch && !directRelease) {
+        return sendError(response, 400, `分支 ${repository.branch} 未配置直接发布，请修改 deploy.workflow.json 的 directReleaseBranches`)
+      }
+      const ownerAccess = directRelease
+        ? null
+        : await inspectOwnerAccess(repository.root, repository.gitUserName || '', ownerMapPath)
       const [latest, logRange, submoduleCommitMessage] = await Promise.all([
         gitResult(repository.root, ['log', '-1', '--pretty=%s']),
-        gitResult(repository.root, ['log', '--pretty=- %s', `${config.remote}/${config.targetBranch}..HEAD`]),
+        directRelease
+          ? Promise.resolve({ exitCode: 0, output: '' })
+          : gitResult(repository.root, ['log', '--pretty=- %s', `${config.remote}/${config.targetBranch}..HEAD`]),
         inferSubmoduleCommitMessage(repository.root),
       ])
       const subject = latest.output || repository.branch
       const angularPattern = /^(feat|fix|docs|style|refactor|perf|test|chore|revert|build|ci)(\(.+\))?:\s/i
       const mergeTitle = angularPattern.test(subject) ? subject : `chore: ${subject}`
-      const mergeDescription = logRange.exitCode === 0 && logRange.output
+      const mergeDescription = directRelease
+        ? ''
+        : logRange.exitCode === 0 && logRange.output
         ? logRange.output
         : `- 合并 ${repository.branch} 到 ${config.targetBranch}`
 
@@ -684,6 +729,7 @@ export function registerDeploymentRoutes(app: Express, configPath: string, owner
           productionEnvironment: config.display.productionEnvironment,
           productionIntervalSeconds: Math.round(config.productionPoll.intervalMs / 1000),
           productionMaxAttempts: config.productionPoll.maxAttempts,
+          directRelease,
         },
       })
     } catch (error) {
@@ -698,8 +744,8 @@ export function registerDeploymentRoutes(app: Express, configPath: string, owner
     if (!repository.isGitRepository || !repository.root || !repository.branch) {
       return sendError(response, 400, '该目录未被 Git 管理')
     }
-    if (repository.isProtectedBranch || repository.detached) {
-      return sendError(response, 400, '请从非主分支发起部署')
+    if (repository.detached) {
+      return sendError(response, 400, '请先切换到一个有效分支')
     }
     if (!repository.remote || repository.remote === '未配置 origin') {
       return sendError(response, 400, '当前仓库未配置 origin')
@@ -724,17 +770,23 @@ export function registerDeploymentRoutes(app: Express, configPath: string, owner
     if (needsCommitMessage && !input.commitMessage) {
       return sendError(response, 400, '当前工作区存在改动，请填写提交信息')
     }
-    if (!input.useCrsAiTitle && !input.mergeTitle) {
-      return sendError(response, 400, '关闭 crs2 AI 后，请填写 Merge 标题')
-    }
     if (input.commitMessage.length > 300 || input.mergeTitle.length > 300 || input.mergeDescription.length > 4000) {
       return sendError(response, 400, '部署输入内容过长')
     }
 
     try {
       const config = await loadConfig(configPath)
-      const ownerAccess = await inspectOwnerAccess(repository.root, repository.gitUserName || '', ownerMapPath)
-      if (ownerAccess.reviewerRequired && !ownerAccess.owners.some((owner) => owner.displayName === input.reviewerName)) {
+      const directRelease = isDirectReleaseBranch(repository.branch, config)
+      if (repository.isProtectedBranch && !directRelease) {
+        return sendError(response, 400, `分支 ${repository.branch} 未配置直接发布，请修改 deploy.workflow.json 的 directReleaseBranches`)
+      }
+      if (!directRelease && !input.useCrsAiTitle && !input.mergeTitle) {
+        return sendError(response, 400, '关闭 crs2 AI 后，请填写 Merge 标题')
+      }
+      const ownerAccess = directRelease
+        ? null
+        : await inspectOwnerAccess(repository.root, repository.gitUserName || '', ownerMapPath)
+      if (ownerAccess?.reviewerRequired && !ownerAccess.owners.some((owner) => owner.displayName === input.reviewerName)) {
         return sendError(response, 400, '当前 Git 用户不是项目 Owner，请选择审核人')
       }
       const session: DeploymentSession = {

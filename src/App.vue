@@ -111,6 +111,7 @@ type DeploymentConfigSummary = {
   productionEnvironment: string
   productionIntervalSeconds: number
   productionMaxAttempts: number
+  directRelease: boolean
 }
 
 type OwnerAccess = {
@@ -260,18 +261,20 @@ const hasRepository = computed(() => repository.value?.isGitRepository === true)
 const hasOrigin = computed(() => Boolean(repository.value?.remote && repository.value.remote !== '未配置 origin'))
 const canDeploy = computed(() => Boolean(
   hasRepository.value
-  && !repository.value?.isProtectedBranch
   && !repository.value?.detached
   && hasOrigin.value
   && !projectIsDeploying.value
   && !isBusy.value,
 ))
 const deploymentNeedsCommit = computed(() => repository.value?.isClean === false)
+const deploymentIsDirectRelease = computed(() => deploymentConfig.value?.directRelease === true)
 const deploymentFormValid = computed(() => Boolean(
   (!deploymentNeedsCommit.value || deploymentForm.value.commitMessage.trim())
-  && (deploymentForm.value.useCrsAiTitle || deploymentForm.value.mergeTitle.trim())
-  && deploymentOwnerAccess.value
-  && (!deploymentOwnerAccess.value.reviewerRequired || deploymentForm.value.reviewerName),
+  && (deploymentIsDirectRelease.value || (
+    (deploymentForm.value.useCrsAiTitle || deploymentForm.value.mergeTitle.trim())
+    && deploymentOwnerAccess.value
+    && (!deploymentOwnerAccess.value.reviewerRequired || deploymentForm.value.reviewerName)
+  )),
 ))
 const selectedReviewer = computed(() => deploymentOwnerAccess.value?.owners.find(
   (owner) => owner.displayName === deploymentForm.value.reviewerName,
@@ -307,7 +310,6 @@ const checkedTime = computed(() => {
 const deployBlocker = computed(() => {
   if (!projectPath.value) return '先选择项目目录'
   if (!hasRepository.value) return '当前目录不是 Git 仓库'
-  if (repository.value?.isProtectedBranch) return '请先切换到非 main / master 分支'
   if (repository.value?.detached) return '请先切换到一个工作分支'
   if (!hasOrigin.value) return '请先配置 origin 远程仓库'
   if (projectIsDeploying.value) return '当前项目正在部署，可从右下角查看进度'
@@ -1282,7 +1284,7 @@ onBeforeUnmount(() => {
         <ShieldAlert :size="21" />
         <div>
           <strong>当前位于 {{ repository.branch }} 分支</strong>
-          <span>主分支受保护，请使用下方按钮切换到开发分支。</span>
+          <span>是否允许跳过合并直接发布，由 deploy.workflow.json 的 directReleaseBranches 决定。</span>
         </div>
       </div>
 
@@ -1568,8 +1570,8 @@ onBeforeUnmount(() => {
               <li :class="{ pass: hasRepository }">
                 <span><Check v-if="hasRepository" :size="13" /><X v-else :size="13" /></span>有效的 Git 仓库
               </li>
-              <li :class="{ pass: hasRepository && !repository?.isProtectedBranch && !repository?.detached }">
-                <span><Check v-if="hasRepository && !repository?.isProtectedBranch && !repository?.detached" :size="13" /><X v-else :size="13" /></span>非主分支
+              <li :class="{ pass: hasRepository && !repository?.detached }">
+                <span><Check v-if="hasRepository && !repository?.detached" :size="13" /><X v-else :size="13" /></span>有效分支（主分支按配置直发）
               </li>
               <li :class="{ pass: hasRepository }">
                 <span><Check v-if="hasRepository" :size="13" /><X v-else :size="13" /></span>
@@ -1740,15 +1742,17 @@ onBeforeUnmount(() => {
         <template v-else-if="!deployment">
           <div class="deploy-route" aria-label="部署路径">
             <span><small>来源</small><strong>{{ repository?.branch }}</strong></span>
-            <ArrowRight :size="15" />
-            <span><small>合并</small><strong>{{ deploymentConfig?.targetBranch || 'master' }}</strong></span>
+            <template v-if="!deploymentIsDirectRelease">
+              <ArrowRight :size="15" />
+              <span><small>合并</small><strong>{{ deploymentConfig?.targetBranch || 'master' }}</strong></span>
+            </template>
             <ArrowRight :size="15" />
             <span><small>测试</small><strong>{{ deploymentConfig?.testTask || 'mtat-prod' }}</strong></span>
             <ArrowRight :size="15" />
             <span><small>生产</small><strong>{{ deploymentConfig?.productionEnvironment || '国内(PROD)' }}</strong></span>
           </div>
 
-          <div v-if="deploymentOwnerAccess" class="owner-access-band" :class="deploymentOwnerAccess.isCurrentUserOwner ? 'authorized' : 'review-required'">
+          <div v-if="!deploymentIsDirectRelease && deploymentOwnerAccess" class="owner-access-band" :class="deploymentOwnerAccess.isCurrentUserOwner ? 'authorized' : 'review-required'">
             <UserRoundCheck v-if="deploymentOwnerAccess.isCurrentUserOwner" :size="18" />
             <ShieldAlert v-else :size="18" />
             <div>
@@ -1772,12 +1776,12 @@ onBeforeUnmount(() => {
             </label>
           </div>
 
-          <p v-if="deploymentOwnerAccess?.reviewerRequired && selectedReviewer" class="reviewer-notice">
+          <p v-if="!deploymentIsDirectRelease && deploymentOwnerAccess?.reviewerRequired && selectedReviewer" class="reviewer-notice">
             请通知 <strong>{{ selectedReviewer.displayName }}</strong>（{{ selectedReviewer.gitUserName || '未配置 Git 用户名' }}）进行合并分支
           </p>
 
           <form class="deploy-form" @submit.prevent="confirmDeploy">
-            <label>
+            <label :class="{ 'full-field': deploymentIsDirectRelease }">
               <span>提交信息 <small>{{ deploymentNeedsCommit ? '当前有改动，必填' : '可选，无改动时跳过' }}</small></span>
               <input
                 v-model="deploymentForm.commitMessage"
@@ -1787,7 +1791,7 @@ onBeforeUnmount(() => {
                 placeholder="chore: 更新部署内容"
               />
             </label>
-            <div class="form-field merge-title-field">
+            <div v-if="!deploymentIsDirectRelease" class="form-field merge-title-field">
               <div class="field-label">
                 Merge 总结标题
                 <label class="ai-title-choice">
@@ -1808,7 +1812,7 @@ onBeforeUnmount(() => {
                 {{ deploymentForm.useCrsAiTitle ? '执行合并时接受框架生成标题并在日志中回显；关闭 AI 后使用此处内容。' : '将直接使用此 Angular 风格标题。' }}
               </small>
             </div>
-            <label class="full-field">
+            <label v-if="!deploymentIsDirectRelease" class="full-field">
               <span>Merge 具体描述 <small>可选</small></span>
               <textarea v-model="deploymentForm.mergeDescription" rows="5" maxlength="4000" placeholder="可留空"></textarea>
             </label>
@@ -1829,7 +1833,7 @@ onBeforeUnmount(() => {
               <CircleAlert v-else :size="21" />
               <span>
                 <strong>{{ deployment.status === 'running' ? '正在执行部署流程' : deployment.status === 'success' ? '全部步骤已完成' : deployment.error }}</strong>
-                <small>{{ deployment.sourceBranch }} → {{ deployment.targetBranch }}</small>
+                <small>{{ deployment.sourceBranch === deployment.targetBranch ? `${deployment.sourceBranch} · 直接发布` : `${deployment.sourceBranch} → ${deployment.targetBranch}` }}</small>
               </span>
             </div>
             <time>{{ new Date(deployment.startedAt).toLocaleTimeString('zh-CN', { hour12: false }) }}</time>

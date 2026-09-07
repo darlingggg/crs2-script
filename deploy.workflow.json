@@ -1,7 +1,8 @@
 {
-  "version": 1,
+  "version": 2,
   "remote": "origin",
   "targetBranch": "master",
+  "directReleaseBranches": ["master"],
   "defaults": {
     "commitMessage": "chore: 更新部署前配置"
   },
@@ -63,7 +64,10 @@
         { "prompt": "请选择项目评审人", "value": "{{reviewerKeys}}", "delayMs": 250, "optional": true },
         { "prompt": "请选择项目评审Owner", "value": "{{reviewerKeys}}", "delayMs": 250, "optional": true },
         { "prompt": "请输入本次Merge的总结标题", "value": "{{mergeTitleResponse}}", "delayMs": 250 },
-        { "prompt": "请输入本次Merge的具体描述信息", "value": "{{mergeDescription}}", "delayMs": 250 }
+        { "prompt": "请输入本次Merge的具体描述信息", "value": "{{mergeDescription}}", "delayMs": 250, "optional": true },
+        { "prompt": "是否为本次 MR 开启 AI PR 评审", "value": "no", "delayMs": 250, "optional": true },
+        { "prompt": "是否记住", "value": "no", "delayMs": 250, "optional": true },
+        { "prompt": "是否仍补充需求、设计稿等评审详细信息到 MR 描述", "value": "no", "delayMs": 250, "optional": true }
       ],
       "timeoutMs": 300000
     },

@@ -9,7 +9,7 @@
 - 每个项目可配置开发分支（默认 `dev`），支持一键切换、从本地分支选择，或执行 `git switch -c` 创建新分支
 - 成功发布的项目会保存到本机历史并在下次启动时自动恢复；目录失效时会提示并自动删除记录
 - 读取仓库根目录、当前分支、提交和远程地址
-- 在 `main` / `master` 分支显示常驻警告并锁定部署
+- 在 `main` / `master` 分支显示常驻提示；列入配置的主分支可跳过合并直接发布
 - 通过 `git status --porcelain` 检查工作区，有改动时在部署前自动提交；工作区或暂存区仅包含干净子模块的 Gitlink 更新时自动生成 `chore: 更新子包引用至 path@commit`，其他已有改动由用户填写提交信息
 - 对非 Git 目录禁用全部部署功能
 - 支持执行 `git submodule update --remote --recursive`
@@ -32,8 +32,8 @@
 1. 按部署选项更新子包和 package owner
 2. 工作区有改动时使用用户填写的信息提交；工作区干净时无需填写，部署选项产生的新改动使用配置中的默认信息
 3. 执行 `git fetch origin --prune` 并推送当前分支
-4. 执行 `crs2 em` 创建合并；遇到 GitLab 分支同步延迟时每 10 秒重试，最多执行 3 次
-5. 切换 `master`，轮询 `git pull` 直到包含来源分支提交
+4. 普通开发分支执行 `crs2 em` 创建合并；遇到 GitLab 分支同步延迟时每 10 秒重试，最多执行 3 次
+5. 普通开发分支切换 `master`，轮询 `git pull` 直到包含来源分支提交；`directReleaseBranches` 中的分支跳过第 4、5 步
 6. 执行国内测试环境的 `mtat-prod` 发布
 7. 每分钟尝试一次国内生产发布，最多 10 次
 
@@ -43,7 +43,18 @@
 
 Merge 标题默认接受 `crs2 em` 内置 AI 生成的默认值，无需填写，生成内容会在实时命令日志中回显。关闭“优先使用 crs2 AI”后才要求填写 Angular 风格标题；Merge 描述始终可选。
 
-当前 `crs2 1.2.5` 的测试和生产发布统一使用交互式命令 `crs2 er`：测试依次选择“国内(测试)”和 `mtat-prod`；生产选择“国内(PROD)”后通常直接确认，若个别项目仍出现任务问题则选择 `mtat-prod`。
+测试和生产发布统一使用交互式命令 `crs2 er`：测试依次选择“国内(测试)”和 `mtat-prod`；生产选择“国内(PROD)”后通常直接确认，若个别项目仍出现任务问题则选择 `mtat-prod`。
+
+### JSON 流程配置
+
+流程配置集中在 `deploy.workflow.json`，安装版对应应用 `resources` 目录中的同名文件。服务会在每次打开部署确认窗口和启动部署任务时重新读取，因此修改后无需重新构建或修改源码。
+
+- `directReleaseBranches`：允许跳过 Owner 检查、`crs2 em` 和合并同步，直接进入测试/生产发布的分支列表，默认包含 `master`
+- `commands.*`：命令、参数、超时和交互回答
+- `commands.merge.responses`：`crs2 em` 的问答顺序；`prompt` 是问题中稳定的一段文本，`value` 是自动输入内容，`optional` 可兼容不同 CLI 版本
+- `mergeRetry`、`mergePoll`、`productionPoll`：合并重试、同步轮询和生产发布轮询策略
+
+新版 `crs2 em` 增加的 AI PR 评审、记住选择和补充评审信息三个问题，默认都在 `commands.merge.responses` 中回答 `no`。以后 CLI 增删问题时只需调整这一数组。
 
 ## 运行
 
