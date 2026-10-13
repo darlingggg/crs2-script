@@ -34,8 +34,8 @@
 3. 执行 `git fetch origin --prune` 并推送当前分支
 4. 普通开发分支执行 `crs2 em` 创建合并；遇到 GitLab 分支同步延迟时每 10 秒重试，最多执行 3 次
 5. 普通开发分支切换 `master`，轮询 `git pull` 直到包含来源分支提交；`directReleaseBranches` 中的分支跳过第 4、5 步
-6. 执行国内测试环境的 `mtat-prod` 发布
-7. 每分钟尝试一次国内生产发布，最多 10 次
+6. 执行国内测试环境的 `mtat-prod` 发布；失败后等待 15 秒重试一次，仍失败则结束本次部署
+7. 立即执行国内生产发布；失败后等待 15 秒重试一次，仍失败则结束本次部署
 
 部署任务在本地服务后台运行，界面每秒读取一次步骤和日志状态，并支持取消当前任务。
 
@@ -54,7 +54,7 @@ Merge 标题默认接受 `crs2 em` 内置 AI 生成的默认值，无需填写�
 - `directReleaseBranches`：允许跳过 Owner 检查、`crs2 em` 和合并同步，直接进入测试/生产发布的分支列表，默认包含 `master`
 - `commands.*`：命令、参数、超时和交互回答
 - `commands.merge.responses`：`crs2 em` 的问答顺序；`prompt` 是问题中稳定的一段文本，`value` 是自动输入内容，`optional` 可兼容不同 CLI 版本
-- `mergeRetry`、`mergePoll`、`productionPoll`：合并重试、同步轮询和生产发布轮询策略
+- `mergeRetry`、`mergePoll`、`testReleaseRetry`、`productionPoll`：合并重试、同步轮询以及测试和生产发布的重试策略
 
 新版 `crs2 em` 增加的 AI PR 评审、记住选择和补充评审信息三个问题，默认都在 `commands.merge.responses` 中回答 `no`。以后 CLI 增删问题时只需调整这一数组。
 

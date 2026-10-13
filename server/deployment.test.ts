@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 import express from 'express'
-import { parseProjectOwners, registerDeploymentRoutes, resolveProjectOwners, validateWorkflowConfig } from './deployment.ts'
+import { parseProjectOwners, registerDeploymentRoutes, resolveProjectOwners, retryRelease, validateWorkflowConfig } from './deployment.ts'
 
 test('resolves git usernames embedded by newer crs2 owner output', () => {
   const output = [
@@ -37,6 +37,55 @@ test('validates the editable workflow config', async () => {
   const invalid = structuredClone(config)
   delete invalid.commands.merge
   assert.throws(() => validateWorkflowConfig(invalid), /commands\.merge 配置不完整/)
+
+  const missingRetry = structuredClone(config)
+  delete missingRetry.testReleaseRetry
+  assert.throws(() => validateWorkflowConfig(missingRetry), /testReleaseRetry 配置不完整/)
+})
+
+test('release succeeds immediately without waiting or retrying', async () => {
+  const attempts: number[] = []
+  const waits: number[] = []
+  await retryRelease(
+    { intervalMs: 15000, maxAttempts: 2 },
+    async (attempt) => { attempts.push(attempt) },
+    async (ms) => { waits.push(ms) },
+    () => assert.fail('unexpected retry'),
+  )
+  assert.deepEqual(attempts, [1])
+  assert.deepEqual(waits, [])
+})
+
+test('release retries once after 15 seconds and stops after a second failure', async () => {
+  const attempts: number[] = []
+  const waits: number[] = []
+  const retries: number[] = []
+  await assert.rejects(
+    retryRelease(
+      { intervalMs: 15000, maxAttempts: 2 },
+      async (attempt) => { attempts.push(attempt); throw new Error(`failure ${attempt}`) },
+      async (ms) => { waits.push(ms) },
+      (nextAttempt) => { retries.push(nextAttempt) },
+    ),
+    /failure 2/,
+  )
+  assert.deepEqual(attempts, [1, 2])
+  assert.deepEqual(waits, [15000])
+  assert.deepEqual(retries, [2])
+})
+
+test('release can succeed on its single retry', async () => {
+  const attempts: number[] = []
+  await retryRelease(
+    { intervalMs: 15000, maxAttempts: 2 },
+    async (attempt) => {
+      attempts.push(attempt)
+      if (attempt === 1) throw new Error('temporary error')
+    },
+    async () => undefined,
+    () => undefined,
+  )
+  assert.deepEqual(attempts, [1, 2])
 })
 
 test('saves validated workflow config through the API', async () => {
