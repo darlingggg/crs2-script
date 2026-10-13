@@ -3,9 +3,10 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import type { AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import test from 'node:test'
 import express from 'express'
-import { parseProjectOwners, registerDeploymentRoutes, resolveProjectOwners, retryRelease, validateWorkflowConfig } from './deployment.ts'
+import { parseProjectOwners, registerDeploymentRoutes, resolveProjectOwners, retryRelease, runCommand, validateWorkflowConfig } from './deployment.ts'
 
 test('resolves git usernames embedded by newer crs2 owner output', () => {
   const output = [
@@ -39,8 +40,8 @@ test('validates the editable workflow config', async () => {
   assert.throws(() => validateWorkflowConfig(invalid), /commands\.merge 配置不完整/)
 
   const missingRetry = structuredClone(config)
-  delete missingRetry.testReleaseRetry
-  assert.throws(() => validateWorkflowConfig(missingRetry), /testReleaseRetry 配置不完整/)
+  delete missingRetry.releaseErrorRetry
+  assert.throws(() => validateWorkflowConfig(missingRetry), /releaseErrorRetry 配置不完整/)
 })
 
 test('release succeeds immediately without waiting or retrying', async () => {
@@ -86,6 +87,24 @@ test('release can succeed on its single retry', async () => {
     () => undefined,
   )
   assert.deepEqual(attempts, [1, 2])
+})
+
+test('stops a release command as soon as it reports ERR', async () => {
+  const session = {
+    path: process.cwd(),
+    cancelled: false,
+    steps: [{ id: 'test_release', label: '发布国内测试', status: 'running' }],
+    logs: [],
+  } as unknown as Parameters<typeof runCommand>[0]
+  const command = {
+    label: '发布国内测试',
+    program: 'node',
+    args: [fileURLToPath(new URL('./fixtures/release-error.cjs', import.meta.url))],
+    timeoutMs: 5000,
+  }
+  const startedAt = Date.now()
+  await assert.rejects(runCommand(session, 'test_release', command, {}, true), /ERR request/)
+  assert.ok(Date.now() - startedAt < command.timeoutMs, 'should stop before the command timeout')
 })
 
 test('saves validated workflow config through the API', async () => {

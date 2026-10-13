@@ -46,7 +46,7 @@ type WorkflowConfig = {
   }
   mergePoll: { intervalMs: number; maxAttempts: number }
   mergeRetry: { intervalMs: number; maxAttempts: number; retryOn: string[] }
-  testReleaseRetry: { intervalMs: number; maxAttempts: number }
+  releaseErrorRetry: { intervalMs: number; maxAttempts: number }
   productionPoll: { intervalMs: number; maxAttempts: number }
   commands: Record<string, CommandConfig>
 }
@@ -230,12 +230,14 @@ export function validateWorkflowConfig(value: unknown): WorkflowConfig {
   requireText(value.display.testTask, 'display.testTask')
   requireText(value.display.productionEnvironment, 'display.productionEnvironment')
 
-  for (const pollName of ['mergePoll', 'testReleaseRetry', 'productionPoll'] as const) {
+  for (const pollName of ['mergePoll', 'releaseErrorRetry', 'productionPoll'] as const) {
     const poll = value[pollName]
     if (!isRecord(poll)) throw new DeploymentFailure(`${pollName} 配置不完整`)
     requireNumber(poll.intervalMs, `${pollName}.intervalMs`, 0)
     requireNumber(poll.maxAttempts, `${pollName}.maxAttempts`, 1)
-    if (!Number.isInteger(poll.maxAttempts)) throw new DeploymentFailure(`${pollName}.maxAttempts 必须是整数`)
+    if (pollName === 'releaseErrorRetry' && !Number.isInteger(poll.maxAttempts)) {
+      throw new DeploymentFailure(`${pollName}.maxAttempts 必须是整数`)
+    }
   }
   if (!isRecord(value.mergeRetry)) throw new DeploymentFailure('mergeRetry 配置不完整')
   requireNumber(value.mergeRetry.intervalMs, 'mergeRetry.intervalMs', 0)
@@ -312,11 +314,12 @@ function delay(session: DeploymentSession, ms: number) {
   })
 }
 
-function runCommand(
+export function runCommand(
   session: DeploymentSession,
   stepId: string,
   config: CommandConfig,
   context: Record<string, string>,
+  abortOnErrorOutput = false,
 ) {
   if (session.cancelled) return Promise.reject(new DeploymentCancelled('部署已取消'))
 
@@ -343,6 +346,7 @@ function runCommand(
 
   return new Promise<{ exitCode: number; output: string }>((resolve, reject) => {
     let output = ''
+    let outputFailure: DeploymentFailure | undefined
     let timedOut = false
     let settled = false
     const responseTimers: NodeJS.Timeout[] = []
@@ -377,6 +381,15 @@ function runCommand(
       const text = stripAnsi(typeof chunk === 'string' ? chunk : chunk.toString('utf8'))
       output += text
       addLog(session, stepId, text, level)
+      if (abortOnErrorOutput && !outputFailure && /(?:^|\s)ERR(?:\s|[:：])/.test(output)) {
+        const message = output.match(/ERR\s+请求信息\s*[:：]\s*([^!！\n]*[!！]?)/)?.[0]
+          || output.match(/ERR(?:\s|[:：])[^\n]*/)?.[0]?.slice(0, 300)
+        outputFailure = new DeploymentFailure(message || `${config.label}返回错误，请查看执行日志`)
+        responseTimers.forEach(clearTimeout)
+        if (session.child) terminateChild(session.child)
+        return
+      }
+      if (outputFailure) return
       scheduleNextResponse()
     }
 
@@ -392,6 +405,7 @@ function runCommand(
       responseTimers.forEach(clearTimeout)
       session.child = undefined
       if (session.cancelled) return reject(new DeploymentCancelled('部署已取消'))
+      if (outputFailure) return reject(outputFailure)
       if (timedOut) return reject(new DeploymentFailure(`${config.label}执行超时`))
       resolve({ exitCode, output: stripAnsi(output).trim() })
     }
@@ -457,36 +471,41 @@ async function runRequiredCommand(
   return result
 }
 
-export async function retryRelease(
+export async function retryRelease<T>(
   policy: { intervalMs: number; maxAttempts: number },
-  execute: (attempt: number) => Promise<void>,
+  execute: (attempt: number) => Promise<T>,
   wait: (ms: number) => Promise<void>,
   onRetry: (nextAttempt: number, error: unknown) => void,
-) {
+): Promise<T> {
   for (let attempt = 1; attempt <= policy.maxAttempts; attempt += 1) {
     try {
-      await execute(attempt)
-      return
+      return await execute(attempt)
     } catch (error) {
       if (error instanceof DeploymentCancelled || attempt === policy.maxAttempts) throw error
       onRetry(attempt + 1, error)
       await wait(policy.intervalMs)
     }
   }
+  throw new DeploymentFailure('发布重试次数无效')
 }
 
-async function runReleaseWithRetry(
+async function runReleaseWithErrorRetry(
   session: DeploymentSession,
   stepId: string,
   command: CommandConfig,
   context: Record<string, string>,
   policy: { intervalMs: number; maxAttempts: number },
+  failOnExitCode: boolean,
 ) {
-  await retryRelease(
+  return retryRelease(
     policy,
     async (attempt) => {
-      getStep(session, stepId).detail = `第 ${attempt}/${policy.maxAttempts} 次尝试`
-      await runRequiredCommand(session, stepId, command, context)
+      if (failOnExitCode) getStep(session, stepId).detail = `第 ${attempt}/${policy.maxAttempts} 次尝试`
+      const result = await runCommand(session, stepId, command, context, true)
+      if (failOnExitCode && result.exitCode !== 0) {
+        throw new DeploymentFailure(result.output || `${command.label}失败，退出码 ${result.exitCode}`)
+      }
+      return result
     },
     (ms) => delay(session, ms),
     (nextAttempt, error) => {
@@ -765,11 +784,25 @@ async function executeDeployment(
     }
 
     startStep(session, 'test_release')
-    await runReleaseWithRetry(session, 'test_release', config.commands.testRelease, context, config.testReleaseRetry)
+    await runReleaseWithErrorRetry(session, 'test_release', config.commands.testRelease, context, config.releaseErrorRetry, true)
     finishStep(session, 'test_release', `${config.display.testEnvironment} / ${config.display.testTask}`)
 
     startStep(session, 'production_release')
-    await runReleaseWithRetry(session, 'production_release', config.commands.productionRelease, context, config.productionPoll)
+    let productionSucceeded = false
+    for (let attempt = 1; attempt <= config.productionPoll.maxAttempts; attempt += 1) {
+      const step = getStep(session, 'production_release')
+      step.detail = `第 ${attempt}/${config.productionPoll.maxAttempts} 次尝试`
+      addLog(session, 'production_release', `${Math.round(config.productionPoll.intervalMs / 60000)} 分钟后开始第 ${attempt} 次生产发布检查`)
+      await delay(session, config.productionPoll.intervalMs)
+      const releaseResult = await runReleaseWithErrorRetry(session, 'production_release', config.commands.productionRelease, context, config.releaseErrorRetry, false)
+      if (releaseResult.exitCode === 0) {
+        productionSucceeded = true
+        break
+      }
+    }
+    if (!productionSucceeded) {
+      throw new DeploymentFailure(`生产发布连续 ${config.productionPoll.maxAttempts} 次未成功`)
+    }
     finishStep(session, 'production_release', `${config.display.productionEnvironment} 发布成功`)
 
     session.status = 'success'
@@ -861,8 +894,7 @@ export function registerDeploymentRoutes(app: Express, configPath: string, owner
           testEnvironment: config.display.testEnvironment,
           testTask: config.display.testTask,
           productionEnvironment: config.display.productionEnvironment,
-          testReleaseIntervalSeconds: Math.round(config.testReleaseRetry.intervalMs / 1000),
-          testReleaseMaxAttempts: config.testReleaseRetry.maxAttempts,
+          releaseErrorRetrySeconds: Math.round(config.releaseErrorRetry.intervalMs / 1000),
           productionIntervalSeconds: Math.round(config.productionPoll.intervalMs / 1000),
           productionMaxAttempts: config.productionPoll.maxAttempts,
           directRelease,

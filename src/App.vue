@@ -111,8 +111,7 @@ type DeploymentConfigSummary = {
   testEnvironment: string
   testTask: string
   productionEnvironment: string
-  testReleaseIntervalSeconds: number
-  testReleaseMaxAttempts: number
+  releaseErrorRetrySeconds: number
   productionIntervalSeconds: number
   productionMaxAttempts: number
   directRelease: boolean
@@ -1974,7 +1973,7 @@ onBeforeUnmount(() => {
           </template>
           <template v-else-if="deploymentIsRunning">
             <span class="polling-note">
-              测试：失败后 {{ deploymentConfig?.testReleaseIntervalSeconds || 15 }} 秒重试 {{ (deploymentConfig?.testReleaseMaxAttempts || 2) - 1 }} 次；生产：失败后 {{ deploymentConfig?.productionIntervalSeconds || 15 }} 秒重试 {{ (deploymentConfig?.productionMaxAttempts || 2) - 1 }} 次
+              发布命令报错后 {{ deploymentConfig?.releaseErrorRetrySeconds || 15 }} 秒重试一次；生产发布仍每 {{ deploymentConfig?.productionIntervalSeconds || 60 }} 秒尝试，最多 {{ deploymentConfig?.productionMaxAttempts || 10 }} 次
             </span>
             <button class="dialog-secondary" type="button" @click="minimizeDeployDialog">收起窗口</button>
             <button class="dialog-danger" type="button" @click="cancelDeployment">取消部署</button>

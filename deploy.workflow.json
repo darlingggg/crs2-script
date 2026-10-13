@@ -20,13 +20,13 @@
     "maxAttempts": 3,
     "retryOn": ["本分支可能已经合并/尚未提交到GitLab"]
   },
-  "testReleaseRetry": {
+  "releaseErrorRetry": {
     "intervalMs": 15000,
     "maxAttempts": 2
   },
   "productionPoll": {
-    "intervalMs": 15000,
-    "maxAttempts": 2
+    "intervalMs": 60000,
+    "maxAttempts": 10
   },
   "commands": {
     "submodules": {
