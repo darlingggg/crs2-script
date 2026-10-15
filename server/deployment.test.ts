@@ -6,7 +6,7 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import test from 'node:test'
 import express from 'express'
-import { parseProjectOwners, registerDeploymentRoutes, resolveProjectOwners, retryRelease, runCommand, validateWorkflowConfig } from './deployment.ts'
+import { parseProjectOwners, pollProductionRelease, registerDeploymentRoutes, resolveProjectOwners, retryRelease, runCommand, validateWorkflowConfig } from './deployment.ts'
 
 test('resolves git usernames embedded by newer crs2 owner output', () => {
   const output = [
@@ -105,6 +105,43 @@ test('stops a release command as soon as it reports ERR', async () => {
   const startedAt = Date.now()
   await assert.rejects(runCommand(session, 'test_release', command, {}, true), /ERR request/)
   assert.ok(Date.now() - startedAt < command.timeoutMs, 'should stop before the command timeout')
+})
+
+test('production polling continues after ERR and succeeds on a later attempt', async () => {
+  const attempts: number[] = []
+  const waits: number[] = []
+  const errors: number[] = []
+  await pollProductionRelease(
+    { intervalMs: 60000, maxAttempts: 10 },
+    async (attempt) => {
+      attempts.push(attempt)
+      if (attempt === 1) throw new Error('ERR request failed')
+      return { exitCode: attempt === 2 ? 1 : 0 }
+    },
+    async (ms) => { waits.push(ms) },
+    () => undefined,
+    (attempt) => { errors.push(attempt) },
+  )
+  assert.deepEqual(attempts, [1, 2, 3])
+  assert.deepEqual(waits, [60000, 60000, 60000])
+  assert.deepEqual(errors, [1])
+})
+
+test('production polling only fails after all attempts report ERR', async () => {
+  const attempts: number[] = []
+  const errors: number[] = []
+  await assert.rejects(
+    pollProductionRelease(
+      { intervalMs: 60000, maxAttempts: 3 },
+      async (attempt) => { attempts.push(attempt); throw new Error('ERR request failed') },
+      async () => undefined,
+      () => undefined,
+      (attempt) => { errors.push(attempt) },
+    ),
+    /连续 3 次未成功/,
+  )
+  assert.deepEqual(attempts, [1, 2, 3])
+  assert.deepEqual(errors, [1, 2, 3])
 })
 
 test('saves validated workflow config through the API', async () => {

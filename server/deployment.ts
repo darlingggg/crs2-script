@@ -515,6 +515,26 @@ async function runReleaseWithErrorRetry(
   )
 }
 
+export async function pollProductionRelease(
+  policy: { intervalMs: number; maxAttempts: number },
+  execute: (attempt: number) => Promise<{ exitCode: number }>,
+  wait: (ms: number) => Promise<void>,
+  onAttempt: (attempt: number) => void,
+  onError: (attempt: number, error: unknown) => void,
+) {
+  for (let attempt = 1; attempt <= policy.maxAttempts; attempt += 1) {
+    onAttempt(attempt)
+    await wait(policy.intervalMs)
+    try {
+      if ((await execute(attempt)).exitCode === 0) return
+    } catch (error) {
+      if (error instanceof DeploymentCancelled) throw error
+      onError(attempt, error)
+    }
+  }
+  throw new DeploymentFailure(`生产发布连续 ${policy.maxAttempts} 次未成功`)
+}
+
 async function gitResult(path: string, args: string[]) {
   return new Promise<{ exitCode: number; output: string }>((resolve) => {
     const child = spawn('git', ['-C', path, ...args], { windowsHide: true })
@@ -788,21 +808,19 @@ async function executeDeployment(
     finishStep(session, 'test_release', `${config.display.testEnvironment} / ${config.display.testTask}`)
 
     startStep(session, 'production_release')
-    let productionSucceeded = false
-    for (let attempt = 1; attempt <= config.productionPoll.maxAttempts; attempt += 1) {
-      const step = getStep(session, 'production_release')
-      step.detail = `第 ${attempt}/${config.productionPoll.maxAttempts} 次尝试`
-      addLog(session, 'production_release', `${Math.round(config.productionPoll.intervalMs / 60000)} 分钟后开始第 ${attempt} 次生产发布检查`)
-      await delay(session, config.productionPoll.intervalMs)
-      const releaseResult = await runReleaseWithErrorRetry(session, 'production_release', config.commands.productionRelease, context, config.releaseErrorRetry, false)
-      if (releaseResult.exitCode === 0) {
-        productionSucceeded = true
-        break
-      }
-    }
-    if (!productionSucceeded) {
-      throw new DeploymentFailure(`生产发布连续 ${config.productionPoll.maxAttempts} 次未成功`)
-    }
+    await pollProductionRelease(
+      config.productionPoll,
+      () => runCommand(session, 'production_release', config.commands.productionRelease, context, true),
+      (ms) => delay(session, ms),
+      (attempt) => {
+        getStep(session, 'production_release').detail = `第 ${attempt}/${config.productionPoll.maxAttempts} 次尝试`
+        addLog(session, 'production_release', `${Math.round(config.productionPoll.intervalMs / 60000)} 分钟后开始第 ${attempt} 次生产发布检查`)
+      },
+      (attempt, error) => {
+        const reason = error instanceof Error ? error.message : String(error)
+        addLog(session, 'production_release', `第 ${attempt} 次生产发布报错：${reason}`, 'error')
+      },
+    )
     finishStep(session, 'production_release', `${config.display.productionEnvironment} 发布成功`)
 
     session.status = 'success'
